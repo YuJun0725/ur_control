@@ -1,0 +1,38 @@
+# ROS 2 / colcon generated output
+/build/
+/install/
+/log/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.coverage
+coverage.xml
+htmlcov/
+
+# ROS bag recordings and runtime data
+rosbag2_*/
+*.db3
+*.mcap
+
+# Local Codex/agent workspace metadata
+/.agents/
+/.codex/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and operating systems
+/.vscode/
+/.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
