@@ -24,7 +24,7 @@ MOVE_UP = [0.0, 0.0, 0.05]
 MOVE_X_POSITIVE = [0.25, 0.0, 0.0]
 MOVE_Y_POSITIVE = [0.0, 0.15, 0.0]
 MOVE_X_NEGATIVE = [-0.25, 0.0, 0.0]
-MOVE_Y_NEGATIVE = [0.0, -0.25, 0.0]
+MOVE_Y_NEGATIVE = [0.0, -0.15, 0.0]
 MOVE_DOWN = [0.0, 0.0, -0.15]
 
 # Keep MoveItPy alive until the process exits. MoveIt 2.12.4 can crash while
