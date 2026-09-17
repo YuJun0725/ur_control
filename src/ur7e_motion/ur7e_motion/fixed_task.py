@@ -21,7 +21,7 @@ from ur7e_motion.motion_command import ExitCode
 # Modify these constants and ``execute_task`` to define another fixed job.
 READY = [1.54, -1.62, 1.4, -1.2, -1.6, -0.11]
 MOVE_UP = [0.0, 0.0, 0.05]
-MOVE_X_POSITIVE = [0.25, 0.0, 0.0]
+MOVE_X_POSITIVE = [0.15, 0.0, 0.0]
 MOVE_Y_POSITIVE = [0.0, 0.15, 0.0]
 MOVE_X_NEGATIVE = [-0.25, 0.0, 0.0]
 MOVE_Y_NEGATIVE = [0.0, -0.05, 0.0]
