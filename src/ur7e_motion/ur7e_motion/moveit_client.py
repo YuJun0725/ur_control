@@ -20,6 +20,7 @@ JOINT_NAMES = (
     "wrist_3_joint",
 )
 PLANNING_CANDIDATES = 3
+STATE_FRESHNESS_TOLERANCE_SECONDS = 0.5
 
 
 class UR7eMotionError(RuntimeError):
@@ -189,8 +190,32 @@ class UR7eMoveItClient:
 
     def _prepare_current_start_state(self) -> Any:
         self._logger.info("Waiting for a current UR7e joint state")
+        # Request a state from a short interval before ``now``. At 100 Hz the
+        # latest sample is normally only milliseconds old, but with Gazebo
+        # simulation time the clock and /joint_states callbacks are handled by
+        # different executors and can differ by one scheduling cycle. Asking
+        # for the exact current timestamp can therefore reject an otherwise
+        # fresh complete state immediately.
+        import rclpy
+        from rclpy.duration import Duration
+
+        current_time = self._node.get_clock().now()
+        # A use_sim_time rclpy node does not receive /clock until it has been
+        # spun at least once. Task nodes normally start by planning, before any
+        # action-client spin, so explicitly prime their ROS clock here.
+        for _ in range(10):
+            if current_time.nanoseconds > 0:
+                break
+            rclpy.spin_once(self._node, timeout_sec=0.1)
+            current_time = self._node.get_clock().now()
+
+        freshness = Duration(seconds=STATE_FRESHNESS_TOLERANCE_SECONDS)
+        if current_time.nanoseconds > freshness.nanoseconds:
+            minimum_state_time = current_time - freshness
+        else:
+            minimum_state_time = current_time
         state_received = self._scene_monitor.wait_for_current_robot_state(
-            self._node.get_clock().now(), self._state_wait_seconds
+            minimum_state_time, self._state_wait_seconds
         )
         if not state_received:
             raise RobotStateUnavailableError(

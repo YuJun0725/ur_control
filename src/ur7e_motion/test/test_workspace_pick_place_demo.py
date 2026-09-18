@@ -176,6 +176,34 @@ def test_workspace_pick_place_builds_scene_and_keeps_success_result():
     assert not any(call[0] == 'remove' for call in calls)
 
 
+def test_static_scene_can_be_loaded_before_recovery_to_ready():
+    """Physical simulations can plan the initial recovery around obstacles."""
+    calls = []
+    config = _config()
+    config = WorkspacePickPlaceConfig(
+        **{
+            **config.__dict__,
+            'static_scene_before_ready': True,
+        }
+    )
+
+    execute_workspace_pick_place(
+        FakeArm(calls),
+        FakeGripper(calls),
+        FakeScene(calls),
+        config,
+        sleep_fn=lambda duration: None,
+    )
+
+    assert [call[1] for call in calls[:4]] == [
+        TABLE_ID,
+        BACK_WALL_ID,
+        STORAGE_BOX_ID,
+        CENTER_DIVIDER_ID,
+    ]
+    assert calls[4] == ('joint', READY)
+
+
 def test_pregrasp_failure_only_cleans_dynamic_target():
     """A failed route does not clear static objects or command later motion."""
     calls = []

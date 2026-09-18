@@ -12,6 +12,7 @@ from moveit_configs_utils import MoveItConfigsBuilder
 def generate_launch_description():
     """Start move_group with the custom URDF, SRDF and controller mapping."""
     launch_rviz = LaunchConfiguration("launch_rviz")
+    use_sim_time = LaunchConfiguration("use_sim_time")
     moveit_config = (
         MoveItConfigsBuilder(
             robot_name="ur7e_robotiq",
@@ -33,6 +34,7 @@ def generate_launch_description():
             {
                 "publish_robot_description": True,
                 "publish_robot_description_semantic": True,
+                "use_sim_time": use_sim_time,
             },
         ],
     )
@@ -55,6 +57,7 @@ def generate_launch_description():
             moveit_config.robot_description_kinematics,
             moveit_config.planning_pipelines,
             moveit_config.joint_limits,
+            {"use_sim_time": use_sim_time},
         ],
     )
 
@@ -64,6 +67,11 @@ def generate_launch_description():
                 "launch_rviz",
                 default_value="true",
                 description="Start RViz with the MoveIt MotionPlanning panel",
+            ),
+            DeclareLaunchArgument(
+                "use_sim_time",
+                default_value="false",
+                description="Use simulation time from /clock",
             ),
             move_group,
             rviz,

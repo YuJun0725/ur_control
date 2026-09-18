@@ -16,6 +16,8 @@
   <xacro:arg name="safety_k_position" default="20"/>
   <xacro:arg name="force_abs_paths" default="false"/>
   <xacro:arg name="use_mock_hardware" default="true"/>
+  <xacro:arg name="use_gazebo" default="false"/>
+  <xacro:arg name="gazebo_controllers_file" default=""/>
   <xacro:arg name="mock_sensor_commands" default="false"/>
   <xacro:arg name="headless_mode" default="false"/>
   <xacro:arg name="robot_ip" default="0.0.0.0"/>
@@ -56,20 +58,23 @@
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </xacro:ur_robot>
 
-  <!-- UR7e hardware interface. For this project the default is GenericSystem
-       Mock Hardware; the model remains compatible with the UR driver inputs. -->
-  <xacro:ur_ros2_control
-    name="$(arg name)"
-    tf_prefix="$(arg tf_prefix)"
-    kinematics_parameters_file="$(arg kinematics_params)"
-    robot_ip="$(arg robot_ip)"
-    script_filename="$(arg script_filename)"
-    input_recipe_filename="$(arg input_recipe_filename)"
-    output_recipe_filename="$(arg output_recipe_filename)"
-    use_mock_hardware="$(arg use_mock_hardware)"
-    mock_sensor_commands="$(arg mock_sensor_commands)"
-    headless_mode="$(arg headless_mode)"
-    initial_positions="${xacro.load_yaml('$(arg initial_positions_file)')}"/>
+  <!-- The official UR hardware block remains unchanged for Mock Hardware and
+       real hardware. Gazebo needs one combined system for both arm and
+       gripper, so that mutually exclusive block is declared below. -->
+  <xacro:unless value="$(arg use_gazebo)">
+    <xacro:ur_ros2_control
+      name="$(arg name)"
+      tf_prefix="$(arg tf_prefix)"
+      kinematics_parameters_file="$(arg kinematics_params)"
+      robot_ip="$(arg robot_ip)"
+      script_filename="$(arg script_filename)"
+      input_recipe_filename="$(arg input_recipe_filename)"
+      output_recipe_filename="$(arg output_recipe_filename)"
+      use_mock_hardware="$(arg use_mock_hardware)"
+      mock_sensor_commands="$(arg mock_sensor_commands)"
+      headless_mode="$(arg headless_mode)"
+      initial_positions="${xacro.load_yaml('$(arg initial_positions_file)')}"/>
+  </xacro:unless>
 
   <link name="$(arg tf_prefix)robotiq_mount_correction_link"/>
   <joint name="$(arg tf_prefix)flange-robotiq_mount_correction" type="fixed">
@@ -99,12 +104,73 @@
   </xacro:robotiq_gripper>
 
   <xacro:if value="$(arg use_mock_hardware)">
-    <ros2_control name="Robotiq2F85" type="system">
+    <xacro:unless value="$(arg use_gazebo)">
+      <ros2_control name="Robotiq2F85" type="system">
+        <hardware>
+          <plugin>mock_components/GenericSystem</plugin>
+          <param name="mock_sensor_commands">$(arg mock_sensor_commands)</param>
+          <param name="state_following_offset">0.0</param>
+        </hardware>
+        <joint name="$(arg tf_prefix)robotiq_85_left_knuckle_joint">
+          <command_interface name="position"/>
+          <state_interface name="position">
+            <param name="initial_value">0.0</param>
+          </state_interface>
+          <state_interface name="velocity"/>
+        </joint>
+      </ros2_control>
+    </xacro:unless>
+  </xacro:if>
+
+  <xacro:if value="$(arg use_gazebo)">
+    <xacro:property name="gazebo_initial_positions"
+                    value="${xacro.load_yaml('$(arg initial_positions_file)')}"/>
+    <ros2_control name="GazeboSimSystem" type="system">
       <hardware>
-        <plugin>mock_components/GenericSystem</plugin>
-        <param name="mock_sensor_commands">$(arg mock_sensor_commands)</param>
-        <param name="state_following_offset">0.0</param>
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
       </hardware>
+      <joint name="$(arg tf_prefix)shoulder_pan_joint">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${gazebo_initial_positions['shoulder_pan_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="$(arg tf_prefix)shoulder_lift_joint">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${gazebo_initial_positions['shoulder_lift_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="$(arg tf_prefix)elbow_joint">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${gazebo_initial_positions['elbow_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="$(arg tf_prefix)wrist_1_joint">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${gazebo_initial_positions['wrist_1_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="$(arg tf_prefix)wrist_2_joint">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${gazebo_initial_positions['wrist_2_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="$(arg tf_prefix)wrist_3_joint">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${gazebo_initial_positions['wrist_3_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
       <joint name="$(arg tf_prefix)robotiq_85_left_knuckle_joint">
         <command_interface name="position"/>
         <state_interface name="position">
@@ -113,6 +179,27 @@
         <state_interface name="velocity"/>
       </joint>
     </ros2_control>
+
+    <gazebo>
+      <plugin filename="libgz_ros2_control-system.so"
+              name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <parameters>$(arg gazebo_controllers_file)</parameters>
+        <controller_manager_name>controller_manager</controller_manager_name>
+        <hold_joints>true</hold_joints>
+        <position_proportional_gain>0.2</position_proportional_gain>
+      </plugin>
+    </gazebo>
+
+    <!-- Gazebo-specific contact tuning. The planning collision meshes remain
+         unchanged; these values only affect physical fingertip contact. -->
+    <gazebo reference="$(arg tf_prefix)robotiq_85_left_finger_tip_link">
+      <mu1>1.5</mu1>
+      <mu2>1.5</mu2>
+    </gazebo>
+    <gazebo reference="$(arg tf_prefix)robotiq_85_right_finger_tip_link">
+      <mu1>1.5</mu1>
+      <mu2>1.5</mu2>
+    </gazebo>
   </xacro:if>
 
   <!-- Task-space commands target the centre between the fingertips rather

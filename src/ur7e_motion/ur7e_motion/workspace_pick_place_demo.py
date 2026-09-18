@@ -62,6 +62,7 @@ class WorkspacePickPlaceConfig:
     grasp_position: float
     gripper_duration: float
     scene_wait_seconds: float
+    static_scene_before_ready: bool = False
 
 
 def execute_workspace_pick_place(
@@ -78,6 +79,8 @@ def execute_workspace_pick_place(
     target_added = False
 
     try:
+        if config.static_scene_before_ready:
+            _add_static_workcell(scene, config)
         arm.move_to_joint(READY)
         gripper.open(config.gripper_duration)
         ready_pose = arm.get_current_pose().pose
@@ -88,7 +91,8 @@ def execute_workspace_pick_place(
             ready_pose.orientation.w,
         ]
 
-        _add_static_workcell(scene, config)
+        if not config.static_scene_before_ready:
+            _add_static_workcell(scene, config)
         scene.add_box(
             TARGET_ID,
             config.target_size,
@@ -216,6 +220,7 @@ def _read_config(node: Any) -> WorkspacePickPlaceConfig:
         'grasp_position': 0.50,
         'gripper_duration': 1.0,
         'scene_wait_seconds': 0.5,
+        'static_scene_before_ready': False,
     }
     for name, default in defaults.items():
         node.declare_parameter(name, default)
@@ -258,6 +263,12 @@ def _read_config(node: Any) -> WorkspacePickPlaceConfig:
     if scene_wait_seconds < 0.0:
         raise ValueError('scene_wait_seconds must not be negative')
 
+    static_scene_before_ready = node.get_parameter(
+        'static_scene_before_ready'
+    ).value
+    if not isinstance(static_scene_before_ready, bool):
+        raise ValueError('static_scene_before_ready must be a bool')
+
     lift_translation = values['lift_translation']
     if lift_translation[2] <= 0.0:
         raise ValueError('lift_translation must have a positive Z component')
@@ -279,6 +290,7 @@ def _read_config(node: Any) -> WorkspacePickPlaceConfig:
         grasp_position=grasp_position,
         gripper_duration=gripper_duration,
         scene_wait_seconds=scene_wait_seconds,
+        static_scene_before_ready=static_scene_before_ready,
     )
 
 

@@ -1,0 +1,43 @@
+/**:
+  ros__parameters:
+    # Wildcard scope is intentional: both the rclpy task node and MoveItPy's
+    # internal rclcpp node must use the same Gazebo clock as /joint_states.
+    use_sim_time: true
+    # Gazebo obstacles already exist physically before the task starts. Add
+    # their MoveIt twins before any recovery-to-READY motion, so repeat runs
+    # also plan safely around the divider.
+    static_scene_before_ready: true
+    # The Gazebo position interface considers an arm goal reached within the
+    # controller's 0.1 rad goal tolerance. Match MoveIt's next-trajectory
+    # start validation to that same simulated-hardware tolerance.
+    trajectory_execution.allowed_start_tolerance: 0.1
+
+    table_size: [0.70, 0.45, 0.30]
+    table_position: [0.0, 0.48, 0.15]
+
+    back_wall_size: [0.70, 0.05, 0.55]
+    back_wall_position: [0.0, 0.75, 0.575]
+
+    storage_box_size: [0.14, 0.14, 0.20]
+    storage_box_position: [-0.26, 0.62, 0.40]
+
+    center_divider_size: [0.06, 0.18, 0.24]
+    center_divider_position: [0.02, 0.47, 0.42]
+
+    # The physical cube settles onto the z=0.30 table. The extra millimetre
+    # avoids starting the MoveIt attached body in exact table contact.
+    target_size: [0.035, 0.035, 0.060]
+    target_position: [0.16, 0.47, 0.331]
+    place_position: [0.16, 0.32, 0.331]
+
+    # In Gazebo the TCP is aimed at the cube centre so both fingertips contact
+    # opposite faces. OMPL still determines the collision-free route.
+    grasp_tcp_offset: [0.0, 0.0, 0.0]
+    lift_translation: [0.0, 0.0, 0.10]
+
+    # 0.37 rad gives a slight physical squeeze on the 35 mm cube. The RViz
+    # logical demo uses 0.50 rad, but that target would demand penetration and
+    # correctly triggers a Gazebo trajectory-tolerance violation.
+    grasp_position: 0.37
+    gripper_duration: 2.0
+    scene_wait_seconds: 0.5

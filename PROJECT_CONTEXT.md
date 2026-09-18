@@ -11,7 +11,8 @@
 - UR7e
 - ROS 官方 UR 二进制包通过 apt 安装
 - 系统 ROS 环境：`/opt/ros/jazzy`
-- 当前使用 `ros2_control` Mock Hardware，不连接 URSim 或真实机械臂
+- 当前同时保留 `ros2_control` Mock Hardware 流程，并已加入 Gazebo Harmonic
+  物理仿真；尚未连接 URSim 或真实机械臂
 
 ## 已验证内容
 
@@ -50,23 +51,37 @@
     后墙、储物箱、中间隔断和抓取方块。实际 Mock Hardware 验证中，机械臂成功绕开
     隔断、抓取并搬运方块、无碰撞抬升、放置后解除附加并返回严格向下 READY；静态场景
     和放置方块会保留在 RViz。
+15. 已建立 `ur7e_gazebo`，接入 Gazebo Harmonic、`gz_ros2_control`、仿真时钟和
+    工作单元物理场景。UR7e 六轴和 Robotiq 主关节由 Gazebo 控制，同时保留现有
+    MoveIt 控制器名称与 Python 接口。
+16. Gazebo 完整抓取任务已通过无界面实测：三个控制器均进入 `active`，机械臂绕开
+    隔断完成抓取、抬升、搬运、放置并返回 READY；80 g 动态方块从约
+    `[0.16, 0.47, 0.33]` 被物理搬运到 `[0.1600, 0.3213, 0.3300] m`。
+17. Gazebo 物理引擎使用 Bullet Featherstone、1 ms 步长和实时倍率 1.0。未使用
+    原计划中的 DART，因为 Harmonic 的 DART 后端不能创建夹爪所需的 mimic 约束；
+    Bullet Featherstone 能正确驱动五个被动夹爪关节。
 
 ## 当前 ROS 2 链路
 
 ```text
-MoveIt 2 → ros2_control 控制器 → Mock Hardware → /joint_states
-                                      ↓
-                             robot_state_publisher → /tf
+                            ┌→ Mock Hardware
+MoveIt 2 → ros2_control ──┤
+                            └→ gz_ros2_control → Gazebo 物理世界
+                                     ↓
+                               /joint_states
+                                     ↓
+                          robot_state_publisher → /tf
 ```
 
-真实 UR 链路将把 Mock Hardware 替换为 `ur_robot_driver` 的真实硬件接口。
+Mock Hardware 与 Gazebo 互斥启动。真实 UR 链路将把仿真硬件替换为
+`ur_robot_driver` 的真实硬件接口。
 
 ## 下一步
 
-1. 加入摄像头坐标系和物体坐标变换，用感知结果替代固定抓取点。
-2. 为抓取接近和退出增加笛卡尔直线轨迹，并加入抓取前后安全点。
-3. 再考虑 Gazebo/Isaac Sim 物理仿真；URSim 主要用于 UR 控制器和通信验证。
-4. 创建 `ur7e_bringup` 包，整理多节点启动文件和工作单元配置。
+1. 在 Gazebo 中加入 RGB-D 相机模型，并桥接图像、深度图和 CameraInfo。
+2. 加入相机坐标系、目标检测和 TF 坐标变换，用感知结果替代固定抓取点。
+3. 为抓取接近和退出增加笛卡尔直线轨迹，并加入抓取前后安全点。
+4. 调整夹爪接触、控制器跟踪和异常恢复，提高不同初始状态下的抓取稳定性。
 5. 最后配置真实机器人网络、External Control、标定和真机驱动。
 
 ## 注意事项
@@ -74,4 +89,5 @@ MoveIt 2 → ros2_control 控制器 → Mock Hardware → /joint_states
 - 不要修改 `/opt/ros/jazzy` 中的官方安装文件；自己的代码放在工作区 `src/`。
 - `robot_ip:=0.0.0.0` 只用于 Mock Hardware 占位；真机必须使用控制柜实际 IP。
 - 不要同时运行直接 Python URScript 控制程序和 ROS 2 驱动。
+- 不要同时启动 Mock Hardware 和 Gazebo；两者使用相同的控制器、关节状态和 TF 名称。
 - 直接 Python 控制路线使用 Dashboard `29999`、RTDE `30004`、Secondary/URScript `30002`；目前项目主路线是 ROS 2 官方驱动。

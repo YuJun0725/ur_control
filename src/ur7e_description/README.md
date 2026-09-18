@@ -88,3 +88,9 @@ ros2 action send_goal \
 这里的 `position` 是左侧主 knuckle 关节的弧度值，不是两指间距；`sec: 2`
 表示用约 2 秒完成开合动画。当前阶段使用 Mock Hardware，不模拟抓取力、接触或
 物体动力学。真机阶段会将这个轨迹控制器替换为 Robotiq 的夹爪动作控制器。
+
+## Gazebo Harmonic
+
+物理仿真由独立的 `ur7e_gazebo` 包提供。Gazebo 模式通过同一个 Xacro 的
+`use_gazebo:=true` 分支启用单一 `gz_ros2_control` 系统，不会改变上述 Mock
+Hardware 启动方式。具体构建和启动命令见 `ur7e_gazebo/README.md`。
