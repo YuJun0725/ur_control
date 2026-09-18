@@ -17,7 +17,14 @@ from ur7e_motion.moveit_client import (
 from ur7e_motion.validation import validate_mode, validate_numeric_vector
 
 
-DEFAULT_JOINT_POSITIONS = [1.54, -1.62, 1.4, -1.2, -1.6, -0.11]
+DEFAULT_JOINT_POSITIONS = [
+    1.54,
+    -1.62,
+    1.4,
+    -1.350796327,
+    -1.570796326589793,
+    -0.030796327,
+]
 DEFAULT_TRANSLATION = [0.0, 0.0, 0.05]
 
 # MoveIt 2.12.4 can segfault while destroying MoveItPy during interpreter
@@ -34,6 +41,8 @@ class ExitCode(IntEnum):
     ROBOT_STATE_UNAVAILABLE = 4
     PLANNING_FAILED = 5
     EXECUTION_FAILED = 6
+    SCENE_FAILED = 7
+    GRIPPER_FAILED = 8
     INTERNAL_ERROR = 10
 
 

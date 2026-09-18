@@ -1,0 +1,30 @@
+/**:
+  ros__parameters:
+    # The worktable occupies the front of the robot's workspace. Its top is
+    # z=0.30 m, and the target bottom is kept 1 cm above that surface.
+    table_size: [0.70, 0.45, 0.30]
+    table_position: [0.0, 0.48, 0.15]
+
+    back_wall_size: [0.70, 0.05, 0.55]
+    back_wall_position: [0.0, 0.75, 0.575]
+
+    storage_box_size: [0.14, 0.14, 0.20]
+    storage_box_position: [-0.26, 0.62, 0.40]
+
+    # This divider blocks the direct READY-to-pregrasp route. OMPL must find
+    # a collision-free route around it.
+    center_divider_size: [0.06, 0.18, 0.24]
+    center_divider_position: [0.02, 0.47, 0.42]
+
+    target_size: [0.035, 0.035, 0.060]
+    target_position: [0.16, 0.47, 0.34]
+    place_position: [0.16, 0.32, 0.34]
+
+    # At grasp, robotiq_tcp is 3 cm below the target centre. The 10 cm lift
+    # also defines the pre-grasp and post-place retreat TCP height.
+    grasp_tcp_offset: [0.0, 0.0, -0.03]
+    lift_translation: [0.0, 0.0, 0.10]
+
+    grasp_position: 0.50
+    gripper_duration: 1.0
+    scene_wait_seconds: 0.5

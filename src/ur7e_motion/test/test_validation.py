@@ -62,12 +62,13 @@ def test_normalize_quaternion_rejects_zero_norm():
 
 
 def test_public_client_exposes_minimal_motion_api():
-    """The reusable client exposes the three intended motion methods."""
+    """The reusable client exposes the intended motion and state methods."""
     from ur7e_motion import UR7eMotionError, UR7eMoveItClient
 
     assert callable(UR7eMoveItClient.move_to_joint)
     assert callable(UR7eMoveItClient.move_to_pose)
     assert callable(UR7eMoveItClient.move_by_translation)
+    assert callable(UR7eMoveItClient.get_current_pose)
     assert issubclass(UR7eMotionError, RuntimeError)
 
 

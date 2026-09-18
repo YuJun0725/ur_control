@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    # A support surface whose top is 1 cm below the base mounting plane.
+    table_size: [1.4, 1.4, 0.08]
+    table_position: [0.0, 0.0, -0.05]
+
+    # This box is placed halfway between the current robotiq_tcp pose and the goal.
+    obstacle_size: [0.04, 0.08, 0.08]
+    # Keep the box halfway along a 20 cm motion.  The previous 7.5 cm offset
+    # overlapped the Robotiq fingertip collision mesh at the READY pose.
+    obstacle_offset: [0.10, 0.0, 0.0]
+    target_translation: [0.20, 0.0, 0.0]
+
+    # Allow RViz and other planning-scene consumers to display each state.
+    scene_wait_seconds: 1.0
+    goal_hold_seconds: 2.0

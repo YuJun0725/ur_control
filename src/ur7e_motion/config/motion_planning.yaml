@@ -19,6 +19,8 @@ ompl:
   ur_manipulator:
     planner_configs:
       - RRTConnectkConfigDefault
+    # Check short path segments so thin scene obstacles are not skipped.
+    longest_valid_segment_fraction: 0.002
 
 plan_request_params:
   planning_attempts: 1

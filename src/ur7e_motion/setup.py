@@ -28,6 +28,10 @@ setup(
         "console_scripts": [
             "fixed_task = ur7e_motion.fixed_task:main",
             "motion_command = ur7e_motion.motion_command:main",
+            "obstacle_demo = ur7e_motion.obstacle_demo:main",
+            "pick_place_demo = ur7e_motion.pick_place_demo:main",
+            "workspace_pick_place_demo = "
+            "ur7e_motion.workspace_pick_place_demo:main",
         ],
     },
 )

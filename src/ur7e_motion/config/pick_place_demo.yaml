@@ -1,0 +1,14 @@
+/**:
+  ros__parameters:
+    object_size: [0.035, 0.035, 0.060]
+    object_offset_from_ready_tcp: [0.0, 0.0, -0.07]
+
+    approach_translation: [0.0, 0.0, -0.10]
+    lift_translation: [0.0, 0.0, 0.10]
+    transport_translation: [0.15, 0.0, 0.0]
+    place_translation: [0.0, 0.0, -0.10]
+    retreat_translation: [0.0, 0.0, 0.10]
+
+    grasp_position: 0.50
+    gripper_duration: 1.0
+    scene_wait_seconds: 0.5

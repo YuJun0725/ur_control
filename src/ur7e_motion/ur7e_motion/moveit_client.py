@@ -1,6 +1,7 @@
 """Reusable MoveItPy motion client for the UR7e manipulator."""
 
 from collections.abc import Sequence
+import math
 import time
 from typing import Any
 
@@ -8,7 +9,7 @@ from ur7e_motion.validation import normalize_quaternion, validate_numeric_vector
 
 
 PLANNING_GROUP = "ur_manipulator"
-END_EFFECTOR_LINK = "tool0"
+END_EFFECTOR_LINK = "robotiq_tcp"
 REFERENCE_FRAME = "base_link"
 JOINT_NAMES = (
     "shoulder_pan_joint",
@@ -18,6 +19,7 @@ JOINT_NAMES = (
     "wrist_2_joint",
     "wrist_3_joint",
 )
+PLANNING_CANDIDATES = 3
 
 
 class UR7eMotionError(RuntimeError):
@@ -84,6 +86,30 @@ class UR7eMoveItClient:
         """Return the owned MoveItPy instance for advanced integrations."""
         return self._moveit
 
+    @property
+    def planning_scene_monitor(self) -> Any:
+        """Return the planning scene monitor used by this motion client."""
+        return self._scene_monitor
+
+    def get_current_pose(self) -> Any:
+        """Return the current gripper TCP pose as a PoseStamped in base_link."""
+        current_state = self._prepare_current_start_state()
+        current_pose = current_state.get_pose(END_EFFECTOR_LINK)
+        return self._make_pose_goal(
+            [
+                current_pose.position.x,
+                current_pose.position.y,
+                current_pose.position.z,
+            ],
+            [
+                current_pose.orientation.x,
+                current_pose.orientation.y,
+                current_pose.orientation.z,
+                current_pose.orientation.w,
+            ],
+            REFERENCE_FRAME,
+        )
+
     def move_to_joint(self, positions: Sequence[float]) -> None:
         """Move to six absolute joint positions, expressed in radians."""
         from moveit.core.robot_state import RobotState
@@ -109,7 +135,7 @@ class UR7eMoveItClient:
         *,
         frame_id: str = REFERENCE_FRAME,
     ) -> None:
-        """Move tool0 to an absolute pose.
+        """Move the gripper TCP to an absolute pose.
 
         Position is [x, y, z] in metres. Orientation is the quaternion
         [x, y, z, w]. The default reference frame is base_link.
@@ -132,7 +158,7 @@ class UR7eMoveItClient:
         self._plan_and_execute()
 
     def move_by_translation(self, translation: Sequence[float]) -> None:
-        """Translate tool0 relative to its current pose in base_link.
+        """Translate the gripper TCP relative to its current pose in base_link.
 
         Translation is [dx, dy, dz] in metres. The current tool orientation is
         preserved as the goal orientation.
@@ -207,17 +233,39 @@ class UR7eMoveItClient:
             raise MotionPlanningError("MoveIt rejected the requested pose goal")
 
     def _plan_and_execute(self) -> None:
-        plan_result = self._arm.plan(
-            single_plan_parameters=self._plan_parameters
-        )
-        if not plan_result:
-            raise MotionPlanningError(
-                f"Motion planning failed: {plan_result.error_code}"
+        candidates: list[tuple[float, Any]] = []
+        last_error = None
+        for candidate_number in range(1, PLANNING_CANDIDATES + 1):
+            candidate = self._arm.plan(
+                single_plan_parameters=self._plan_parameters
+            )
+            if not candidate:
+                last_error = candidate.error_code
+                self._logger.warning(
+                    f"Planning candidate {candidate_number}/"
+                    f"{PLANNING_CANDIDATES} failed: {last_error}; "
+                    "excluding it from trajectory selection"
+                )
+                continue
+
+            path_length = _joint_path_length(candidate.trajectory)
+            candidates.append((path_length, candidate))
+            self._logger.info(
+                f"Planning candidate {candidate_number}/"
+                f"{PLANNING_CANDIDATES} succeeded: "
+                f"joint-space length={path_length:.4f} rad"
             )
 
+        if not candidates:
+            raise MotionPlanningError(
+                "Motion planning produced no valid trajectory after "
+                f"{PLANNING_CANDIDATES} candidates: {last_error}"
+            )
+
+        path_length, plan_result = min(candidates, key=lambda item: item[0])
         self._logger.info(
-            f"Planning succeeded in {plan_result.planning_time:.3f} seconds; "
-            "executing trajectory"
+            f"Selected shortest of {len(candidates)} valid candidates: "
+            f"joint-space length={path_length:.4f} rad; executing trajectory"
         )
         execution_status = self._moveit.execute(
             plan_result.trajectory, controllers=[]
@@ -227,3 +275,20 @@ class UR7eMoveItClient:
                 f"Trajectory execution failed: {execution_status.status}"
             )
         self._logger.info("Trajectory execution succeeded")
+
+
+def _joint_path_length(trajectory: Any) -> float:
+    """Return cumulative Euclidean joint travel for a robot trajectory."""
+    trajectory_message = trajectory.get_robot_trajectory_msg()
+    points = trajectory_message.joint_trajectory.points
+    if not points:
+        raise MotionPlanningError("Planned trajectory contains no joint points")
+
+    path_length = 0.0
+    for previous, current in zip(points, points[1:]):
+        if len(previous.positions) != len(current.positions):
+            raise MotionPlanningError(
+                "Planned trajectory has inconsistent joint dimensions"
+            )
+        path_length += math.dist(previous.positions, current.positions)
+    return path_length

@@ -15,9 +15,13 @@ import yaml
 def generate_launch_description():
     """Create a launch description for one parameterized motion."""
     moveit_config = (
-        MoveItConfigsBuilder(robot_name="ur", package_name="ur_moveit_config")
-        .robot_description_semantic(
-            Path("srdf") / "ur.srdf.xacro", {"name": "ur7e"}
+        MoveItConfigsBuilder(
+            robot_name="ur7e_robotiq",
+            package_name="ur7e_moveit_config",
+        )
+        .planning_pipelines(
+            default_planning_pipeline="ompl",
+            pipelines=["ompl"],
         )
         .to_moveit_configs()
     )
@@ -37,14 +41,17 @@ def generate_launch_description():
     )
     joint_positions_argument = DeclareLaunchArgument(
         "joint_positions",
-        default_value="[1.54, -1.62, 1.4, -1.2, -1.6, -0.11]",
+        default_value=(
+            "[1.54, -1.62, 1.4, -1.350796327, "
+            "-1.570796326589793, -0.030796327]"
+        ),
         description="Six UR7e joint positions in radians",
     )
     translation_argument = DeclareLaunchArgument(
         "translation",
         default_value="[0.0, 0.0, 0.05]",
         description=(
-            "tool0 translation [dx, dy, dz] in the base_link frame, in metres"
+            "robotiq_tcp translation [dx, dy, dz] in base_link, in metres"
         ),
     )
 

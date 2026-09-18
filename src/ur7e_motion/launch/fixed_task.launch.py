@@ -15,9 +15,13 @@ import yaml
 def generate_launch_description():
     """Load MoveIt parameters and start the fixed task node."""
     moveit_config = (
-        MoveItConfigsBuilder(robot_name="ur", package_name="ur_moveit_config")
-        .robot_description_semantic(
-            Path("srdf") / "ur.srdf.xacro", {"name": "ur7e"}
+        MoveItConfigsBuilder(
+            robot_name="ur7e_robotiq",
+            package_name="ur7e_moveit_config",
+        )
+        .planning_pipelines(
+            default_planning_pipeline="ompl",
+            pipelines=["ompl"],
         )
         .to_moveit_configs()
     )

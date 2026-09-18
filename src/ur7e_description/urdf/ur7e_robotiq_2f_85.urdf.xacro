@@ -1,0 +1,127 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="ur7e_robotiq_2f_85">
+  <xacro:arg name="name" default="ur7e_robotiq_2f_85"/>
+  <xacro:arg name="ur_type" default="ur7e"/>
+  <xacro:arg name="tf_prefix" default=""/>
+  <xacro:arg name="joint_limit_params"
+             default="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"/>
+  <xacro:arg name="kinematics_params"
+             default="$(find ur_description)/config/$(arg ur_type)/default_kinematics.yaml"/>
+  <xacro:arg name="physical_params"
+             default="$(find ur_description)/config/$(arg ur_type)/physical_parameters.yaml"/>
+  <xacro:arg name="visual_params"
+             default="$(find ur_description)/config/$(arg ur_type)/visual_parameters.yaml"/>
+  <xacro:arg name="safety_limits" default="true"/>
+  <xacro:arg name="safety_pos_margin" default="0.15"/>
+  <xacro:arg name="safety_k_position" default="20"/>
+  <xacro:arg name="force_abs_paths" default="false"/>
+  <xacro:arg name="use_mock_hardware" default="true"/>
+  <xacro:arg name="mock_sensor_commands" default="false"/>
+  <xacro:arg name="headless_mode" default="false"/>
+  <xacro:arg name="robot_ip" default="0.0.0.0"/>
+  <xacro:arg name="script_filename" default=""/>
+  <xacro:arg name="output_recipe_filename" default=""/>
+  <xacro:arg name="input_recipe_filename" default=""/>
+  <xacro:arg name="initial_positions_file"
+             default="$(find ur_description)/config/initial_positions.yaml"/>
+  <!-- UR's flange and tool0 share an origin but their axes differ. Use the
+       official flange-to-tool0 rotation so the gripper approach axis follows
+       the robot's tool0 direction. -->
+  <xacro:arg name="gripper_mount_roll" default="${pi / 2.0}"/>
+  <xacro:arg name="gripper_mount_pitch" default="0.0"/>
+  <xacro:arg name="gripper_mount_yaw" default="${pi / 2.0}"/>
+  <xacro:arg name="gripper_rotation" default="0.0"/>
+  <!-- 0.011 m adapter + 0.1518 m base-to-fingertip centre = 0.1628 m. -->
+  <xacro:arg name="gripper_tcp_offset" default="0.1518"/>
+
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+  <xacro:include filename="$(find ur_robot_driver)/urdf/ur.ros2_control.xacro"/>
+  <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
+  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro"/>
+
+  <link name="world"/>
+
+  <xacro:ur_robot
+    name="$(arg name)"
+    tf_prefix="$(arg tf_prefix)"
+    parent="world"
+    joint_limits_parameters_file="$(arg joint_limit_params)"
+    kinematics_parameters_file="$(arg kinematics_params)"
+    physical_parameters_file="$(arg physical_params)"
+    visual_parameters_file="$(arg visual_params)"
+    safety_limits="$(arg safety_limits)"
+    safety_pos_margin="$(arg safety_pos_margin)"
+    safety_k_position="$(arg safety_k_position)"
+    force_abs_paths="$(arg force_abs_paths)">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <!-- UR7e hardware interface. For this project the default is GenericSystem
+       Mock Hardware; the model remains compatible with the UR driver inputs. -->
+  <xacro:ur_ros2_control
+    name="$(arg name)"
+    tf_prefix="$(arg tf_prefix)"
+    kinematics_parameters_file="$(arg kinematics_params)"
+    robot_ip="$(arg robot_ip)"
+    script_filename="$(arg script_filename)"
+    input_recipe_filename="$(arg input_recipe_filename)"
+    output_recipe_filename="$(arg output_recipe_filename)"
+    use_mock_hardware="$(arg use_mock_hardware)"
+    mock_sensor_commands="$(arg mock_sensor_commands)"
+    headless_mode="$(arg headless_mode)"
+    initial_positions="${xacro.load_yaml('$(arg initial_positions_file)')}"/>
+
+  <link name="$(arg tf_prefix)robotiq_mount_correction_link"/>
+  <joint name="$(arg tf_prefix)flange-robotiq_mount_correction" type="fixed">
+    <parent link="$(arg tf_prefix)flange"/>
+    <child link="$(arg tf_prefix)robotiq_mount_correction_link"/>
+    <origin xyz="0 0 0"
+            rpy="$(arg gripper_mount_roll) $(arg gripper_mount_pitch) $(arg gripper_mount_yaw)"/>
+  </joint>
+
+  <!-- The official adapter provides the remaining mechanical connection and
+       the visual/collision meshes for the mounting plate. -->
+  <xacro:ur_to_robotiq
+    prefix="$(arg tf_prefix)"
+    connected_to="$(arg tf_prefix)robotiq_mount_correction_link"
+    rotation="$(arg gripper_rotation)"/>
+
+  <!-- The geometry macro keeps all URDF mimic relationships. Its bundled
+       Jazzy ros2_control block exposes command interfaces for mimic joints,
+       which current ros2_control rejects, so control is declared separately
+       below for the single independently actuated joint. -->
+  <xacro:robotiq_gripper
+    name="Robotiq2F85"
+    prefix="$(arg tf_prefix)"
+    parent="$(arg tf_prefix)gripper_mount_link"
+    include_ros2_control="false">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:robotiq_gripper>
+
+  <xacro:if value="$(arg use_mock_hardware)">
+    <ros2_control name="Robotiq2F85" type="system">
+      <hardware>
+        <plugin>mock_components/GenericSystem</plugin>
+        <param name="mock_sensor_commands">$(arg mock_sensor_commands)</param>
+        <param name="state_following_offset">0.0</param>
+      </hardware>
+      <joint name="$(arg tf_prefix)robotiq_85_left_knuckle_joint">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+    </ros2_control>
+  </xacro:if>
+
+  <!-- Task-space commands target the centre between the fingertips rather
+       than the bare UR tool0 flange. The value is measured from the gripper
+       mounting plane along the aligned gripper Z axis. -->
+  <link name="$(arg tf_prefix)robotiq_tcp"/>
+  <joint name="$(arg tf_prefix)robotiq_tcp_joint" type="fixed">
+    <parent link="$(arg tf_prefix)robotiq_85_base_link"/>
+    <child link="$(arg tf_prefix)robotiq_tcp"/>
+    <origin xyz="0 0 $(arg gripper_tcp_offset)" rpy="0 0 0"/>
+  </joint>
+</robot>

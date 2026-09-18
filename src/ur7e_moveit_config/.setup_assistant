@@ -1,0 +1,7 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: ur7e_description
+    relative_path: urdf/ur7e_robotiq_2f_85.urdf.xacro
+    xacro_args: ur_type:=ur7e name:=ur7e_robotiq_2f_85 use_mock_hardware:=true
+  srdf:
+    relative_path: srdf/ur7e_robotiq.srdf
