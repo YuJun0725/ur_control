@@ -1,4 +1,8 @@
-"""Run a collision-aware pick-and-place demo in a fixed workcell scene."""
+"""在固定工作单元中执行带碰撞检测的抓取—搬运—放置演示。
+
+此文件只负责任务编排：机械臂运动交给 UR7eMoveItClient，夹爪开合交给
+GripperClient，桌面/方块等逻辑碰撞物体交给 SceneManager。
+"""
 
 from dataclasses import dataclass
 import math
@@ -26,25 +30,31 @@ from ur7e_motion.pick_place_demo import GRIPPER_TOUCH_LINKS, TCP_LINK
 from ur7e_motion.validation import validate_numeric_vector
 
 
+# PlanningScene 物体的稳定 ID：重复运行时同 ID 会覆盖旧物体，而不是不断累积。
 TABLE_ID = 'workspace_table'
 BACK_WALL_ID = 'workspace_back_wall'
 STORAGE_BOX_ID = 'workspace_storage_box'
 CENTER_DIVIDER_ID = 'workspace_center_divider'
 TARGET_ID = 'workspace_target'
 
+# 下列 RGBA 颜色只用于在 RViz 中快速区分工作单元物体。
 TABLE_COLOR = (0.45, 0.25, 0.10, 1.0)
 BACK_WALL_COLOR = (0.60, 0.66, 0.75, 1.0)
 STORAGE_BOX_COLOR = (0.10, 0.38, 0.82, 1.0)
 CENTER_DIVIDER_COLOR = (0.95, 0.48, 0.08, 1.0)
 TARGET_COLOR = (0.88, 0.08, 0.08, 1.0)
 
+# 保持客户端到进程退出：规避当前 MoveItPy 版本在 Python 析构阶段的已知退出问题。
 _MOVEIT_CLIENT: UR7eMoveItClient | None = None
 _GRIPPER_CLIENT: GripperClient | None = None
 
 
 @dataclass(frozen=True)
 class WorkspacePickPlaceConfig:
-    """Validated fixed-scene geometry and task parameters."""
+    """已经校验过的工作单元几何和任务参数。
+
+    所有位置/尺寸都是 base_link 下的米单位三维向量；夹爪位置是主动 knuckle 的弧度。
+    """
 
     table_size: list[float]
     table_position: list[float]
@@ -73,16 +83,24 @@ def execute_workspace_pick_place(
     *,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Pick one box in the workcell, place it, and leave the scene visible."""
+    """执行一次完整抓取流程，成功后保留场景供 RViz 观察。
+
+    动作顺序：READY → 张开 → 建场景 → 预抓取 → 抓取 → 闭合并附着 →
+    抬升/搬运/下放 → 张开并解除附着 → 退出 → READY。
+    """
+    # 这三个标志让 except 中的清理遵循实际进度，避免失败后误操作未创建的资源。
     attached = False
     touch_allowed = False
     target_added = False
 
     try:
+        # Gazebo 中障碍物在物理世界里启动时就存在。重复运行时若机器人不在 READY，
+        # 应先把它们加入 MoveIt，再规划回 READY，才能避免“回家途中穿过隔断”。
         if config.static_scene_before_ready:
             _add_static_workcell(scene, config)
         arm.move_to_joint(READY)
         gripper.open(config.gripper_duration)
+        # READY 被设计为夹爪严格向下。读取其实际四元数，并在全任务中保持该方向。
         ready_pose = arm.get_current_pose().pose
         orientation = [
             ready_pose.orientation.x,
@@ -93,6 +111,7 @@ def execute_workspace_pick_place(
 
         if not config.static_scene_before_ready:
             _add_static_workcell(scene, config)
+        # 目标先作为世界碰撞物体存在：此时 MoveIt 会把它当作不可穿透的障碍物。
         scene.add_box(
             TARGET_ID,
             config.target_size,
@@ -102,11 +121,15 @@ def execute_workspace_pick_place(
         target_added = True
         _sleep_if_positive(config.scene_wait_seconds, sleep_fn)
 
+        # 接近/闭合时，方块必然触碰夹爪。只对夹爪链路暂时放宽 ACM，机械臂其他部位
+        # 依旧不能碰方块、桌面或隔断。
         scene.set_object_touch_allowed(
             TARGET_ID, GRIPPER_TOUCH_LINKS, True
         )
         touch_allowed = True
 
+        # 从物体中心和配置偏移推导四个 TCP 点；lift_translation 同时定义预抓取高度、
+        # 抬升高度和放置后的退出高度。
         source_grasp_tcp = _add_vectors(
             config.target_position, config.grasp_tcp_offset
         )
@@ -120,9 +143,12 @@ def execute_workspace_pick_place(
             place_grasp_tcp, config.lift_translation
         )
 
+        # MoveIt 使用 OMPL 在这些离散目标之间规划；它们不是强制笛卡尔直线段。
         arm.move_to_pose(source_pregrasp_tcp, orientation)
         arm.move_to_pose(source_grasp_tcp, orientation)
         gripper.move_to(config.grasp_position, config.gripper_duration)
+        # 逻辑附着后，MoveIt 会随夹爪一起移动方块碰撞体并将其纳入搬运期碰撞检查。
+        # Gazebo 中的实体方块仍由真实接触与摩擦驱动，二者不是同一份物体状态。
         scene.attach_object(
             TARGET_ID,
             link_name=TCP_LINK,
@@ -133,6 +159,7 @@ def execute_workspace_pick_place(
         arm.move_to_pose(source_pregrasp_tcp, orientation)
         arm.move_to_pose(place_pregrasp_tcp, orientation)
         arm.move_to_pose(place_grasp_tcp, orientation)
+        # 松开后先解除逻辑附着，将方块作为放置位置的新世界碰撞物体保留下来。
         gripper.open(config.gripper_duration)
         scene.detach_object(TARGET_ID)
         attached = False
@@ -143,6 +170,8 @@ def execute_workspace_pick_place(
         touch_allowed = False
         arm.move_to_joint(READY)
     except Exception:
+        # 任意一步失败后不再尝试后续运动；只进行尽力而为的反向清理。
+        # 静态桌面/墙/隔断故意保留，便于在 RViz 中诊断失败原因。
         if attached:
             _ignore_cleanup_error(scene.detach_object, TARGET_ID)
         if touch_allowed:
@@ -158,7 +187,7 @@ def execute_workspace_pick_place(
 
 
 def _add_static_workcell(scene: Any, config: WorkspacePickPlaceConfig) -> None:
-    """Add or replace the persistent fixed collision objects."""
+    """向 MoveIt 添加或覆盖桌面、后墙、储物箱和中间隔断。"""
     for object_id, size, position, color in (
         (TABLE_ID, config.table_size, config.table_position, TABLE_COLOR),
         (
@@ -184,11 +213,12 @@ def _add_static_workcell(scene: Any, config: WorkspacePickPlaceConfig) -> None:
 
 
 def _add_vectors(first: list[float], second: list[float]) -> list[float]:
-    """Add coordinate vectors without exposing binary float display noise."""
+    """相加两个三维坐标向量，并压制二进制浮点显示噪声。"""
     return [round(first[index] + second[index], 10) for index in range(3)]
 
 
 def _ignore_cleanup_error(function: Callable[..., Any], *args: Any) -> None:
+    """清理阶段忽略异常，保留最初导致任务中止的主异常。"""
     try:
         function(*args)
     except Exception:
@@ -203,6 +233,9 @@ def _sleep_if_positive(
 
 
 def _read_config(node: Any) -> WorkspacePickPlaceConfig:
+    """声明 ROS 参数、读取 YAML 覆盖值并做范围/类型校验。"""
+    # 默认值对应 RViz/Mock Hardware 逻辑演示；Gazebo launch 会用自己的 YAML 覆盖
+    # 方块高度、抓取角度和起点容差等物理仿真专用参数。
     defaults = {
         'table_size': [0.70, 0.45, 0.30],
         'table_position': [0.0, 0.48, 0.15],
@@ -225,6 +258,7 @@ def _read_config(node: Any) -> WorkspacePickPlaceConfig:
     for name, default in defaults.items():
         node.declare_parameter(name, default)
 
+    # 所有尺寸和位置都必须正好含有 x、y、z 三项。
     vector_names = (
         'table_size',
         'table_position',
@@ -312,11 +346,13 @@ def _read_finite_number(node: Any, name: str) -> float:
 
 
 def _run(node: Any, config: WorkspacePickPlaceConfig) -> ExitCode:
+    """构建三个核心客户端，运行任务，并转换为可供 launch 识别的退出码。"""
     global _GRIPPER_CLIENT, _MOVEIT_CLIENT
 
     try:
         _MOVEIT_CLIENT = UR7eMoveItClient(node)
         _GRIPPER_CLIENT = GripperClient(node)
+        # 三个对象分别封装规划执行、夹爪 Action 和 PlanningScene 操作。
         scene = SceneManager(node, _MOVEIT_CLIENT.planning_scene_monitor)
         node.get_logger().info(
             'Starting workspace pick-place demo: READY -> avoid divider '
@@ -353,7 +389,7 @@ def _run(node: Any, config: WorkspacePickPlaceConfig) -> ExitCode:
 
 
 def main(args: list[str] | None = None) -> int:
-    """ROS console entry point for the persistent workcell demonstration."""
+    """ROS 控制台入口：读取参数、执行一次任务、返回明确退出码。"""
     rclpy.init(args=args)
     node = rclpy.create_node('ur7e_workspace_pick_place_parameters')
     exit_code = ExitCode.INTERNAL_ERROR
@@ -373,6 +409,8 @@ def main(args: list[str] | None = None) -> int:
             rclpy.shutdown()
 
     if _MOVEIT_CLIENT is not None:
+        # MoveItPy 2.12.4 在解释器正常析构时可能崩溃。完成节点/ROS 清理后让 OS 回收
+        # MoveItPy，同时仍把正确的成功或失败退出码交给 ros2 launch。
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(int(exit_code))

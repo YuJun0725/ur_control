@@ -1,8 +1,20 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://wiki.ros.org/xacro" name="ur7e_robotiq_2f_85">
+  <!--
+    本文件是“组合装配图”：复用官方 UR7e 与 Robotiq 2F-85 的宏，
+    再定义二者如何连接、使用哪种 ros2_control 硬件接口，以及任务 TCP 在哪里。
+
+    Xacro 会在 launch 时展开成普通 URDF。下面的 $(arg xxx) 是启动时可覆盖的参数，
+    ${...} 则是 Xacro 在展开阶段计算的表达式。
+  -->
+
+  <!-- ======================== 1. 可配置启动参数 ======================== -->
+  <!-- 机器人名称、型号与坐标系前缀。当前项目没有前缀，因此关节名保持官方名称。 -->
   <xacro:arg name="name" default="ur7e_robotiq_2f_85"/>
   <xacro:arg name="ur_type" default="ur7e"/>
   <xacro:arg name="tf_prefix" default=""/>
+
+  <!-- 官方 UR7e 参数文件：关节限位、运动学标定、物理尺寸和视觉网格配置。 -->
   <xacro:arg name="joint_limit_params"
              default="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"/>
   <xacro:arg name="kinematics_params"
@@ -15,8 +27,16 @@
   <xacro:arg name="safety_pos_margin" default="0.15"/>
   <xacro:arg name="safety_k_position" default="20"/>
   <xacro:arg name="force_abs_paths" default="false"/>
+
+  <!--
+    硬件模式选择：
+    - use_mock_hardware=true, use_gazebo=false：ROS 2 内部的 Mock Hardware；
+    - use_gazebo=true：Gazebo Harmonic 的 gz_ros2_control；
+    - use_mock_hardware=false, use_gazebo=false：为未来真实 UR 驱动保留。
+  -->
   <xacro:arg name="use_mock_hardware" default="true"/>
   <xacro:arg name="use_gazebo" default="false"/>
+  <!-- Gazebo 控制器 YAML；仅 use_gazebo=true 时使用。 -->
   <xacro:arg name="gazebo_controllers_file" default=""/>
   <xacro:arg name="mock_sensor_commands" default="false"/>
   <xacro:arg name="headless_mode" default="false"/>
@@ -26,23 +46,34 @@
   <xacro:arg name="input_recipe_filename" default=""/>
   <xacro:arg name="initial_positions_file"
              default="$(find ur_description)/config/initial_positions.yaml"/>
-  <!-- UR's flange and tool0 share an origin but their axes differ. Use the
-       official flange-to-tool0 rotation so the gripper approach axis follows
-       the robot's tool0 direction. -->
+
+  <!--
+    flange 与 tool0 的原点重合，但坐标轴方向不同。这里采用官方 flange→tool0 的旋转，
+    使夹爪“朝前/接近物体”的方向与 UR 的 tool0 方向一致。
+    gripper_rotation 可在已对齐工具轴的前提下，绕工具轴旋转夹爪正面。
+  -->
   <xacro:arg name="gripper_mount_roll" default="${pi / 2.0}"/>
   <xacro:arg name="gripper_mount_pitch" default="0.0"/>
   <xacro:arg name="gripper_mount_yaw" default="${pi / 2.0}"/>
   <xacro:arg name="gripper_rotation" default="0.0"/>
-  <!-- 0.011 m adapter + 0.1518 m base-to-fingertip centre = 0.1628 m. -->
+  <!-- 夹爪基座到两指中心的距离，单位米；TCP 会放在这个位置。 -->
   <xacro:arg name="gripper_tcp_offset" default="0.1518"/>
 
+  <!-- ======================== 2. 引入外部模型宏 ======================== -->
+  <!-- UR 本体几何/关节、UR 的 ros2_control、转接板、Robotiq 夹爪几何/关节。 -->
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
   <xacro:include filename="$(find ur_robot_driver)/urdf/ur.ros2_control.xacro"/>
   <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
   <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro"/>
 
+  <!-- world 是整棵机器人 TF 树的根坐标系；UR 底座固定在此处。 -->
   <link name="world"/>
 
+  <!-- ========================== 3. UR7e 本体 =========================== -->
+  <!--
+    调用官方宏生成 UR7e 的所有 link、6 个转动关节、视觉/碰撞/惯性模型。
+    本项目把机器人底座放在 world 原点，后续 Gazebo 也以该根坐标生成机器人。
+  -->
   <xacro:ur_robot
     name="$(arg name)"
     tf_prefix="$(arg tf_prefix)"
@@ -58,9 +89,11 @@
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </xacro:ur_robot>
 
-  <!-- The official UR hardware block remains unchanged for Mock Hardware and
-       real hardware. Gazebo needs one combined system for both arm and
-       gripper, so that mutually exclusive block is declared below. -->
+  <!-- ====================== 4. 非 Gazebo 的 UR 控制接口 ======================
+    使用官方 UR 驱动提供的 ros2_control 描述。
+    Mock Hardware 与未来真实 UR 都走这里；Gazebo 必须让“机械臂 + 夹爪”属于同一个
+    GazeboSimSystem，所以在 use_gazebo=true 时跳过本段，改由后面的 Gazebo 分支声明。
+  -->
   <xacro:unless value="$(arg use_gazebo)">
     <xacro:ur_ros2_control
       name="$(arg name)"
@@ -76,6 +109,10 @@
       initial_positions="${xacro.load_yaml('$(arg initial_positions_file)')}"/>
   </xacro:unless>
 
+  <!-- ====================== 5. flange 到夹爪的机械安装 ======================
+    该虚拟 link 只用于修正安装坐标轴，本身没有几何模型。
+    fixed joint 表示转接板和夹爪相对于机械臂法兰不会运动。
+  -->
   <link name="$(arg tf_prefix)robotiq_mount_correction_link"/>
   <joint name="$(arg tf_prefix)flange-robotiq_mount_correction" type="fixed">
     <parent link="$(arg tf_prefix)flange"/>
@@ -84,17 +121,18 @@
             rpy="$(arg gripper_mount_roll) $(arg gripper_mount_pitch) $(arg gripper_mount_yaw)"/>
   </joint>
 
-  <!-- The official adapter provides the remaining mechanical connection and
-       the visual/collision meshes for the mounting plate. -->
+  <!-- 官方转接板宏：补齐机械连接，并生成转接板的视觉网格和碰撞网格。 -->
   <xacro:ur_to_robotiq
     prefix="$(arg tf_prefix)"
     connected_to="$(arg tf_prefix)robotiq_mount_correction_link"
     rotation="$(arg gripper_rotation)"/>
 
-  <!-- The geometry macro keeps all URDF mimic relationships. Its bundled
-       Jazzy ros2_control block exposes command interfaces for mimic joints,
-       which current ros2_control rejects, so control is declared separately
-       below for the single independently actuated joint. -->
+  <!--
+    官方夹爪宏：生成夹爪的 link、视觉/碰撞网格和 mimic 关系。
+    2F-85 只有左 knuckle 是主动控制关节，其他五个活动关节会依照 mimic 比例跟随。
+    include_ros2_control=false 的原因是：官方宏会为 mimic 关节也声明命令接口，
+    当前 Jazzy 的 ros2_control 不接受这种配置。因此本文件在下面只声明一个主动关节。
+  -->
   <xacro:robotiq_gripper
     name="Robotiq2F85"
     prefix="$(arg tf_prefix)"
@@ -103,6 +141,11 @@
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </xacro:robotiq_gripper>
 
+  <!-- ======================== 6. Mock Hardware 夹爪接口 ========================
+    GenericSystem 不计算真实物理，只让状态跟随 position 命令，方便在 RViz/MoveIt
+    中验证开合和轨迹。注意：Gazebo 模式不能再额外声明此系统，否则同一机器人会有
+    两套 ros2_control 硬件接口。
+  -->
   <xacro:if value="$(arg use_mock_hardware)">
     <xacro:unless value="$(arg use_gazebo)">
       <ros2_control name="Robotiq2F85" type="system">
@@ -111,6 +154,7 @@
           <param name="mock_sensor_commands">$(arg mock_sensor_commands)</param>
           <param name="state_following_offset">0.0</param>
         </hardware>
+        <!-- 唯一可直接命令的夹爪关节；单位为弧度，0 为张开。 -->
         <joint name="$(arg tf_prefix)robotiq_85_left_knuckle_joint">
           <command_interface name="position"/>
           <state_interface name="position">
@@ -122,6 +166,12 @@
     </xacro:unless>
   </xacro:if>
 
+  <!-- ======================== 7. Gazebo 硬件接口 ========================
+    Gazebo 中只创建一个 GazeboSimSystem：它同时导出 UR7e 的六个关节与夹爪主动关节。
+    每个关节都有：
+    - command_interface position：控制器写入目标角度；
+    - state_interface position/velocity：Gazebo 回传实际角度和速度。
+  -->
   <xacro:if value="$(arg use_gazebo)">
     <xacro:property name="gazebo_initial_positions"
                     value="${xacro.load_yaml('$(arg initial_positions_file)')}"/>
@@ -129,6 +179,7 @@
       <hardware>
         <plugin>gz_ros2_control/GazeboSimSystem</plugin>
       </hardware>
+      <!-- 以下六段分别对应 UR7e 的肩部旋转、肩部抬升、肘、腕 1、腕 2、腕 3。 -->
       <joint name="$(arg tf_prefix)shoulder_pan_joint">
         <command_interface name="position"/>
         <state_interface name="position">
@@ -171,6 +222,7 @@
         </state_interface>
         <state_interface name="velocity"/>
       </joint>
+      <!-- Gazebo 中同样只直接控制这一个夹爪主动关节。 -->
       <joint name="$(arg tf_prefix)robotiq_85_left_knuckle_joint">
         <command_interface name="position"/>
         <state_interface name="position">
@@ -180,6 +232,11 @@
       </joint>
     </ros2_control>
 
+    <!--
+      将上面的 ros2_control 描述真正挂到 Gazebo：插件会创建 controller_manager，
+      并读取 gazebo_controllers_file 中的 joint_state_broadcaster、机械臂控制器和
+      夹爪控制器。hold_joints 防止控制器未接管前关节因重力松动。
+    -->
     <gazebo>
       <plugin filename="libgz_ros2_control-system.so"
               name="gz_ros2_control::GazeboSimROS2ControlPlugin">
@@ -190,8 +247,11 @@
       </plugin>
     </gazebo>
 
-    <!-- Gazebo-specific contact tuning. The planning collision meshes remain
-         unchanged; these values only affect physical fingertip contact. -->
+    <!--
+      Gazebo 专用接触参数：mu1/mu2 是两个切向方向的摩擦系数。
+      数值较大可提高夹取方块时的摩擦力；它们只影响 Gazebo 物理接触，
+      不会改变 MoveIt 使用的碰撞网格或碰撞规则。
+    -->
     <gazebo reference="$(arg tf_prefix)robotiq_85_left_finger_tip_link">
       <mu1>1.5</mu1>
       <mu2>1.5</mu2>
@@ -202,9 +262,11 @@
     </gazebo>
   </xacro:if>
 
-  <!-- Task-space commands target the centre between the fingertips rather
-       than the bare UR tool0 flange. The value is measured from the gripper
-       mounting plane along the aligned gripper Z axis. -->
+  <!-- ========================== 8. 任务 TCP ===========================
+    运动规划不再使用裸露的 UR tool0，而使用 robotiq_tcp：两指之间的中心点。
+    所有 move_to_pose()、抓取接近和放置点都以这个坐标系为末端。
+    gripper_tcp_offset 沿已对齐的夹爪 Z 轴测量，决定 TCP 位于指尖之间的哪里。
+  -->
   <link name="$(arg tf_prefix)robotiq_tcp"/>
   <joint name="$(arg tf_prefix)robotiq_tcp_joint" type="fixed">
     <parent link="$(arg tf_prefix)robotiq_85_base_link"/>

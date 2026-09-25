@@ -1,4 +1,4 @@
-"""Start Gazebo Harmonic with the UR7e, Robotiq gripper and controllers."""
+"""启动 Gazebo Harmonic、UR7e + Robotiq 机器人、时钟桥和控制器。"""
 
 from pathlib import Path
 
@@ -18,6 +18,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _gazebo_include(context):
+    """根据 gui/paused 参数组装 Gazebo 启动选项，并包含官方 gz_sim launch。"""
     package_share = Path(get_package_share_directory('ur7e_gazebo'))
     ros_gz_share = Path(get_package_share_directory('ros_gz_sim'))
     gui = LaunchConfiguration('gui').perform(context).lower() in ('1', 'true', 'yes')
@@ -25,6 +26,7 @@ def _gazebo_include(context):
         '1', 'true', 'yes'
     )
     options = []
+    # -r：启动后立刻运行仿真；-s：只启动服务器，不显示 Gazebo GUI。
     if not paused:
         options.append('-r')
     if not gui:
@@ -44,7 +46,7 @@ def _gazebo_include(context):
 
 
 def generate_launch_description():
-    """Spawn the robot and activate the existing public controller names."""
+    """展开 Xacro，向 Gazebo 生成机器人，并在其后加载三个控制器。"""
     package_share = Path(get_package_share_directory('ur7e_gazebo'))
     description_share = Path(get_package_share_directory('ur7e_description'))
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -56,6 +58,8 @@ def generate_launch_description():
         description_share / 'urdf' / 'ur7e_robotiq_2f_85.urdf.xacro'
     )
 
+    # Command 会在 launch 时执行 xacro。关键是 use_gazebo:=true：同一个机器人模型
+    # 因此切换到单一 GazeboSimSystem，而不是 Mock Hardware 的两个硬件系统。
     robot_description = {
         'robot_description': ParameterValue(
             Command(
@@ -76,12 +80,15 @@ def generate_launch_description():
         )
     }
 
+    # robot_state_publisher 根据 robot_description + /joint_states 发布整棵 /tf 树，
+    # 所以 RViz、MoveIt 和任务节点都能得到 base_link → robotiq_tcp 的坐标变换。
     robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
         output='screen',
         parameters=[robot_description, {'use_sim_time': use_sim_time}],
     )
+    # 桥接 Gazebo 仿真时间；同时桥接 set_pose 服务供重复抓取任务重置动态方块。
     clock_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -92,6 +99,8 @@ def generate_launch_description():
             '/world/default/set_pose@ros_gz_interfaces/srv/SetEntityPose',
         ],
     )
+    # create 节点从 /robot_description 读取展开后的 URDF/SDF，并生成名为 ur7e_robotiq
+    # 的 Gazebo 模型。模型生成成功后才允许加载控制器。
     spawn_robot = Node(
         package='ros_gz_sim',
         executable='create',
@@ -104,6 +113,8 @@ def generate_launch_description():
             '-allow_renaming', 'false',
         ],
     )
+    # 这里仅激活控制器；每个控制器的关节列表、频率和容差在
+    # config/gazebo_controllers.yaml 中定义。名称保持与 Mock/MoveIt 一致。
     controller_spawner = Node(
         package='controller_manager',
         executable='spawner',
@@ -135,10 +146,12 @@ def generate_launch_description():
                 default_value='true',
                 description='Use the Gazebo /clock topic',
             ),
+            # OpaqueFunction 让我们能在 launch 运行期读取布尔参数并拼接 gz_args。
             OpaqueFunction(function=_gazebo_include),
             robot_state_publisher,
             clock_bridge,
             spawn_robot,
+            # 防止 controller_manager 尚未创建就调用 spawner。
             RegisterEventHandler(
                 OnProcessExit(
                     target_action=spawn_robot,

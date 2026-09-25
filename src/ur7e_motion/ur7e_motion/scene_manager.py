@@ -1,4 +1,8 @@
-"""Collision-object management for a MoveItPy planning scene."""
+"""MoveIt PlanningScene 中碰撞物体的增删、附加和接触许可管理。
+
+这里管理的是 MoveIt 的“逻辑规划场景”，用于碰撞检查和 RViz 显示；它不会直接创建或
+移动 Gazebo 物理物体。Gazebo 抓取任务会在两个世界中分别维护对应物体。
+"""
 
 from collections.abc import Sequence
 import time
@@ -7,6 +11,7 @@ from typing import Any
 from ur7e_motion.validation import normalize_quaternion, validate_numeric_vector
 
 
+# PlanningScene 的标准增量更新话题；move_group、MoveItPy 和 RViz 都会接收它。
 PLANNING_SCENE_TOPIC = "/planning_scene"
 
 
@@ -15,7 +20,7 @@ class PlanningSceneError(RuntimeError):
 
 
 class SceneManager:
-    """Manage world and attached collision objects used by MoveIt planning."""
+    """管理 MoveIt 规划所需的世界碰撞物体和附着物体。"""
 
     def __init__(
         self,
@@ -25,17 +30,19 @@ class SceneManager:
         planning_scene_topic: str = PLANNING_SCENE_TOPIC,
         scene_update_wait_seconds: float = 0.5,
     ) -> None:
-        """Create a manager for a MoveItPy planning scene monitor."""
+        """创建场景管理器，并建立向 /planning_scene 发布增量的发布者。"""
         from moveit_msgs.msg import PlanningScene
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
         self._logger = node.get_logger()
         self._monitor = planning_scene_monitor
-        self._known_object_ids: set[str] = set()
-        self._attached_object_ids: set[str] = set()
+        # 两个集合只记录“由本管理器操作过”的物体，供任务失败时安全清理使用。
+        self._known_object_ids: set[str] = set()       # 世界中的物体
+        self._attached_object_ids: set[str] = set()    # 已附着在机器人上的物体
         self._scene_update_wait_seconds = float(scene_update_wait_seconds)
         if self._scene_update_wait_seconds < 0.0:
             raise ValueError("scene_update_wait_seconds must not be negative")
+        # TRANSIENT_LOCAL 让晚启动的 RViz 也能获得最近一次完整的场景更新。
         qos = QoSProfile(
             depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -55,10 +62,10 @@ class SceneManager:
         frame_id: str = "base_link",
         color: Sequence[float] | None = None,
     ) -> None:
-        """Add or replace an axis-aligned box collision object.
+        """添加或覆盖一个盒状碰撞物体。
 
-        ``color`` is an optional RGBA vector with components in ``[0.0, 1.0]``.
-        It affects RViz rendering only, never collision checking or planning.
+        ``color`` 是可选 RGBA ``[r, g, b, a]``，范围均为 ``[0.0, 1.0]``。
+        它只改变 RViz 颜色，不会改变碰撞检测或规划结果。
         """
         from geometry_msgs.msg import Pose
         from moveit_msgs.msg import CollisionObject, ObjectColor
@@ -86,6 +93,8 @@ class SceneManager:
                 object_color.color.a,
             ) = rgba
 
+        # MoveIt 用 SolidPrimitive + Pose 描述简单几何体；本项目的桌面、墙、隔断
+        # 和方块都可以用 BOX 表达，无需单独的碰撞网格文件。
         primitive = SolidPrimitive()
         primitive.type = SolidPrimitive.BOX
         primitive.dimensions = dimensions
@@ -106,6 +115,8 @@ class SceneManager:
         collision_object.primitive_poses.append(pose)
         collision_object.operation = CollisionObject.ADD
 
+        # _apply() 同时更新本地 PlanningSceneMonitor 和 ROS 话题，确保当前任务的
+        # MoveItPy 与其他节点/RViz 都能尽快看到同一份场景。
         self._apply(collision_object, object_color=object_color)
         self._known_object_ids.add(clean_id)
         self._logger.info(
@@ -114,7 +125,7 @@ class SceneManager:
         )
 
     def remove_object(self, object_id: str) -> None:
-        """Remove one world or attached collision object from the scene."""
+        """从场景移除一个世界物体；若它已附着，会先解除附着。"""
         from moveit_msgs.msg import CollisionObject
 
         clean_id = self._validate_id(object_id)
@@ -136,7 +147,11 @@ class SceneManager:
         link_name: str = "robotiq_tcp",
         touch_links: Sequence[str],
     ) -> None:
-        """Move an existing world object onto a robot link."""
+        """将已有世界物体逻辑附着到机器人 link。
+
+        这会使 MoveIt 在后续搬运规划中把该物体视为机器人一部分；不会把 Gazebo 物体
+        固定到夹爪，Gazebo 中的移动仍必须依赖真实接触和摩擦。
+        """
         from moveit_msgs.msg import AttachedCollisionObject, CollisionObject
 
         clean_id = self._validate_id(object_id)
@@ -149,6 +164,7 @@ class SceneManager:
         attached_object.object.operation = CollisionObject.ADD
         attached_object.touch_links = clean_touch_links
 
+        # 附着前先确认方块确实存在于世界场景，防止拼错 ID 时产生不完整场景。
         with self._monitor.read_write() as scene:
             message = scene.planning_scene_message
             world_ids = {
@@ -158,6 +174,8 @@ class SceneManager:
                 raise PlanningSceneError(
                     f"Cannot attach unknown world object '{clean_id}'"
                 )
+        # 先发布消息让其他 MoveIt/RViz 实例同步；若本地监视器未在等待时间内收到回环
+        # 更新，则直接调用底层 API 应用，以保证同一任务的下一步能够继续规划。
         self._publish_attached(attached_object)
         if not self._wait_for_attachment_state(clean_id, attached=True):
             with self._monitor.read_write() as scene:
@@ -177,7 +195,7 @@ class SceneManager:
         )
 
     def detach_object(self, object_id: str) -> None:
-        """Detach an object and preserve it at its current world pose."""
+        """解除逻辑附着，并把物体保留在其当前世界位姿。"""
         from moveit_msgs.msg import AttachedCollisionObject, CollisionObject
 
         clean_id = self._validate_id(object_id)
@@ -185,6 +203,7 @@ class SceneManager:
         attached_object.object.id = clean_id
         attached_object.object.operation = CollisionObject.REMOVE
 
+        # 从当前附着列表读出原 link_name；移除操作需要使用同一个附着关系。
         with self._monitor.read_write() as scene:
             message = scene.planning_scene_message
             matching = [
@@ -221,7 +240,11 @@ class SceneManager:
         link_names: Sequence[str],
         allowed: bool,
     ) -> None:
-        """Allow or clear collisions between an object and selected links."""
+        """允许或撤销指定物体与指定 link 之间的碰撞。
+
+        抓取时仅允许方块碰触 8 个夹爪 link，避免 MoveIt 因“夹住方块”而判定失败；
+        机械臂其他 link 与桌面等物体仍保留正常碰撞检查。
+        """
         from moveit_msgs.msg import PlanningScene
 
         clean_id = self._validate_id(object_id)
@@ -229,6 +252,7 @@ class SceneManager:
         if not isinstance(allowed, bool):
             raise ValueError("allowed must be a bool")
 
+        # Allowed Collision Matrix（ACM）是 MoveIt 的“这两个实体可以接触吗”表。
         with self._monitor.read_write() as scene:
             matrix = scene.allowed_collision_matrix
             if allowed:
@@ -250,7 +274,7 @@ class SceneManager:
         )
 
     def clear(self) -> None:
-        """Remove all objects that were added through this manager."""
+        """清理由本管理器创建或附着的所有物体，主要用于异常恢复。"""
         for object_id in tuple(self._attached_object_ids):
             self.detach_object(object_id)
         for object_id in tuple(self._known_object_ids):
@@ -285,6 +309,7 @@ class SceneManager:
         from moveit_msgs.msg import CollisionObject
         from moveit_msgs.msg import PlanningScene
 
+        # 先立即更新当前进程的场景；否则接下来的同进程规划可能早于 ROS 话题回环。
         with self._monitor.read_write() as scene:
             known_ids = {
                 item.id
@@ -312,6 +337,7 @@ class SceneManager:
                 f"MoveIt rejected collision object '{collision_object.id}'"
             )
 
+        # 再发布 is_diff 增量，让 move_group 和 RViz 同步世界物体/颜色。
         scene_update = PlanningScene()
         scene_update.is_diff = True
         scene_update.world.collision_objects.append(collision_object)
@@ -320,6 +346,7 @@ class SceneManager:
         self._publisher.publish(scene_update)
 
     def _publish_attached(self, attached_object: Any) -> None:
+        """向 /planning_scene 发布“附着物体”增量消息。"""
         from moveit_msgs.msg import PlanningScene
 
         scene_update = PlanningScene()
@@ -333,6 +360,7 @@ class SceneManager:
     def _wait_for_attachment_state(
         self, object_id: str, *, attached: bool
     ) -> bool:
+        """短暂轮询本地场景，确认附着/解除附着状态已真正生效。"""
         deadline = time.monotonic() + self._scene_update_wait_seconds
         while True:
             with self._monitor.read_only() as scene:
