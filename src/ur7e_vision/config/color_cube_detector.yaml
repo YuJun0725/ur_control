@@ -1,0 +1,30 @@
+/**:
+  ros__parameters:
+    use_sim_time: true
+    color_topic: /camera/color/image_raw
+    depth_topic: /camera/depth/image_raw
+    camera_info_topic: /camera/color/camera_info
+    base_frame: base_link
+
+    # 过滤掉零散颜色噪声、蓝色储物箱和机器人上较大的蓝色部件。
+    min_contour_area: 80.0
+    max_contour_area: 3500.0
+    min_aspect_ratio: 0.45
+    max_aspect_ratio: 1.80
+    min_fill_ratio: 0.35
+    min_depth: 0.10
+    max_depth: 3.0
+
+    # 只接受桌面上方的检测点，避免把机械臂蓝色关节盖误认为蓝色方块。
+    workspace_min: [-0.32, 0.25, 0.29]
+    workspace_max: [0.32, 0.70, 0.40]
+
+    # OpenCV HSV：H 的范围为 0～179，红色跨越首尾，因此需要两个区间。
+    red_hsv_lower_1: [0, 100, 60]
+    red_hsv_upper_1: [12, 255, 255]
+    red_hsv_lower_2: [168, 100, 60]
+    red_hsv_upper_2: [179, 255, 255]
+    green_hsv_lower: [38, 80, 45]
+    green_hsv_upper: [88, 255, 255]
+    blue_hsv_lower: [92, 100, 45]
+    blue_hsv_upper: [132, 255, 255]

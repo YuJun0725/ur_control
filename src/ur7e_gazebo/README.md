@@ -13,8 +13,8 @@ Gazebo Harmonic。Gazebo 负责刚体动力学、接触和摩擦；MoveIt 继续
 - 物理引擎使用 Bullet Featherstone；Gazebo Harmonic 的 DART 尚不支持夹爪所需的
   mimic 约束，而 Bullet Featherstone 可以让五个被动夹爪关节跟随主动关节；
 - 方块依靠夹爪碰撞网格与摩擦被夹起，不使用固定关节把方块粘在夹爪上；
-- 首版桥接 `/clock` 和重复任务所需的 `/world/default/set_pose` 服务，尚未加入
-  相机和图像话题。
+- 桥接 `/clock`、重复任务所需的 `/world/default/set_pose` 服务，以及固定
+  RGB-D 相机的彩色图、深度图和相机内参。
 
 不要同时启动 `ur7e_mock_control.launch.py` 和 Gazebo，两者会争用相同的控制器、
 `/joint_states` 和机器人 TF。
@@ -95,6 +95,53 @@ ros2 control list_controllers
 - `scaled_joint_trajectory_controller`
 - `gripper_controller`
 
+## 固定 RGB-D 相机
+
+Gazebo 世界右前上方安装了一台固定 RGB-D 相机：
+
+- `camera_link` 在 `base_link` 下的位姿为
+  `[x, y, z, roll, pitch, yaw] = [0.60, 0.10, 1.10, 0, 0.844, 2.577]`；
+- 分辨率为 `640 × 480`，更新频率为 `15 Hz`，水平视场角为 `60°`；
+- 有效深度范围为 `0.10～3.0 m`；
+- 相机朝向桌面中心，启动 `ur7e_gazebo.launch.py` 或一键启动文件时自动启用。
+
+ROS 2 话题如下：
+
+| 内容 | ROS 2 话题 | 消息类型 |
+|---|---|---|
+| 彩色图像 | `/camera/color/image_raw` | `sensor_msgs/msg/Image` |
+| 深度图像 | `/camera/depth/image_raw` | `sensor_msgs/msg/Image` |
+| 相机内参 | `/camera/color/camera_info` | `sensor_msgs/msg/CameraInfo` |
+
+完整 TF 关系为：
+
+```text
+base_link
+└── camera_link
+    ├── camera_color_optical_frame
+    └── camera_depth_optical_frame
+```
+
+两个 optical frame 物理上重合。Gazebo 的 RGB-D 数据已经对齐，消息头使用
+`camera_color_optical_frame`；额外提供 `camera_depth_optical_frame`，方便后续接入
+习惯使用独立深度坐标系的视觉节点。
+
+启动终端 1 后，可在另一个已 source 的终端验证：
+
+```bash
+# 确认三路 ROS 话题
+ros2 topic list | grep /camera/
+
+# 查看相机内参和消息坐标系
+ros2 topic echo /camera/color/camera_info --once
+
+# 查看固定安装 TF
+ros2 run tf2_ros tf2_echo base_link camera_color_optical_frame
+
+# 图形化查看彩色图或深度图；打开后在下拉框中选择对应话题
+ros2 run rqt_image_view rqt_image_view
+```
+
 ## 场景坐标
 
 所有坐标均位于 `base_link`，单位为米：
@@ -105,7 +152,9 @@ ros2 control list_controllers
 | 后墙 | `[0.00, 0.75, 0.575]` | `[0.70, 0.05, 0.55]` |
 | 储物箱 | `[-0.26, 0.62, 0.40]` | `[0.14, 0.14, 0.20]` |
 | 中间隔断 | `[0.02, 0.47, 0.42]` | `[0.06, 0.18, 0.24]` |
-| 抓取方块 | `[0.16, 0.47, 0.331]` | `[0.035, 0.035, 0.060]` |
+| 红色抓取方块 | `[0.16, 0.47, 0.331]` | `[0.035, 0.035, 0.060]` |
+| 绿色识别方块 | `[-0.14, 0.36, 0.331]` | `[0.035, 0.035, 0.060]` |
+| 蓝色识别方块 | `[0.16, 0.62, 0.331]` | `[0.035, 0.035, 0.060]` |
 
 方块被放到 `[0.16, 0.32, 0.331]` 附近。Gazebo 中它会受重力和接触影响，
 因此实际稳定位置可能与规划坐标存在毫米级差异。

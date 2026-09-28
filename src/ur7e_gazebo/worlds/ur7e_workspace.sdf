@@ -18,6 +18,10 @@
     </plugin>
     <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
     <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <!-- Sensors 系统负责更新 RGB-D 相机。使用 Ogre2 渲染彩色图和深度图。 -->
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
 
     <scene>
       <ambient>0.45 0.45 0.45 1</ambient>
@@ -78,7 +82,8 @@
         <collision name="collision"><geometry><box><size>0.14 0.14 0.20</size></box></geometry></collision>
         <visual name="visual">
           <geometry><box><size>0.14 0.14 0.20</size></box></geometry>
-          <material><diffuse>0.10 0.38 0.82 1</diffuse></material>
+          <!-- 使用中性灰，避免与视觉演示中的蓝色方块混淆。 -->
+          <material><diffuse>0.38 0.42 0.48 1</diffuse></material>
         </visual>
       </link>
     </model>
@@ -92,6 +97,54 @@
           <geometry><box><size>0.06 0.18 0.24</size></box></geometry>
           <material><diffuse>0.95 0.48 0.08 1</diffuse></material>
         </visual>
+      </link>
+    </model>
+
+    <!--
+      固定在工作单元右前上方的 RGB-D 相机。
+
+      camera_link 使用机器人中常见的“X 轴朝前、Y 轴朝左、Z 轴朝上”约定。
+      位姿使相机大致朝向桌面中心 (0.00, 0.48, 0.30)。ROS launch 中发布
+      完全相同的 base_link -> camera_link 静态 TF；不要只修改其中一处。
+
+      Gazebo 的 RGB-D 传感器将图像消息标记为 camera_color_optical_frame。
+      该光学坐标系使用 REP-103 相机约定：Z 朝前、X 朝右、Y 朝下。
+    -->
+    <model name="workspace_rgbd_camera">
+      <static>true</static>
+      <pose>0.60 0.10 1.10 0 0.844 2.577</pose>
+      <link name="camera_link">
+        <visual name="camera_body">
+          <pose>-0.04 0 0 0 0 0</pose>
+          <geometry><box><size>0.08 0.12 0.06</size></box></geometry>
+          <material><diffuse>0.12 0.14 0.18 1</diffuse></material>
+        </visual>
+        <visual name="camera_lens">
+          <pose>0.015 0 0 0 1.57079632679 0</pose>
+          <geometry><cylinder><radius>0.025</radius><length>0.03</length></cylinder></geometry>
+          <material><diffuse>0.05 0.20 0.42 1</diffuse></material>
+        </visual>
+        <sensor name="workspace_camera" type="rgbd_camera">
+          <pose>0 0 0 0 0 0</pose>
+          <always_on>true</always_on>
+          <update_rate>15</update_rate>
+          <visualize>true</visualize>
+          <topic>workspace_camera</topic>
+          <camera>
+            <horizontal_fov>1.0471975512</horizontal_fov>
+            <image>
+              <width>640</width>
+              <height>480</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.10</near>
+              <far>3.0</far>
+            </clip>
+            <camera_info_topic>workspace_camera/camera_info</camera_info_topic>
+            <optical_frame_id>camera_color_optical_frame</optical_frame_id>
+          </camera>
+        </sensor>
       </link>
     </model>
 
@@ -116,6 +169,56 @@
         <visual name="visual">
           <geometry><box><size>0.035 0.035 0.060</size></box></geometry>
           <material><diffuse>0.88 0.08 0.08 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <!-- 另外两个动态彩色方块，与红色 workspace_target 共同用于 RGB-D 识别。 -->
+    <model name="workspace_green_cube">
+      <pose>-0.14 0.36 0.331 0 0 0</pose>
+      <allow_auto_disable>false</allow_auto_disable>
+      <link name="link">
+        <inertial>
+          <mass>0.08</mass>
+          <inertia>
+            <ixx>0.0000321667</ixx><iyy>0.0000321667</iyy><izz>0.0000163333</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.035 0.035 0.060</size></box></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+            <bounce><restitution_coefficient>0.0</restitution_coefficient></bounce>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.035 0.035 0.060</size></box></geometry>
+          <material><diffuse>0.06 0.82 0.12 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="workspace_blue_cube">
+      <pose>0.16 0.62 0.331 0 0 0</pose>
+      <allow_auto_disable>false</allow_auto_disable>
+      <link name="link">
+        <inertial>
+          <mass>0.08</mass>
+          <inertia>
+            <ixx>0.0000321667</ixx><iyy>0.0000321667</iyy><izz>0.0000163333</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.035 0.035 0.060</size></box></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+            <bounce><restitution_coefficient>0.0</restitution_coefficient></bounce>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.035 0.035 0.060</size></box></geometry>
+          <material><diffuse>0.04 0.16 0.90 1</diffuse></material>
         </visual>
       </link>
     </model>

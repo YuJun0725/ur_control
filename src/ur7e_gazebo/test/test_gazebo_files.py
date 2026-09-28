@@ -112,15 +112,34 @@ def test_world_contains_fixed_workcell_and_dynamic_target():
         'workspace_back_wall',
         'workspace_storage_box',
         'workspace_center_divider',
+        'workspace_rgbd_camera',
         'workspace_target',
+        'workspace_green_cube',
+        'workspace_blue_cube',
     }.issubset(models)
     for name in (
         'workspace_table',
         'workspace_back_wall',
         'workspace_storage_box',
         'workspace_center_divider',
+        'workspace_rgbd_camera',
     ):
         assert models[name].findtext('static') == 'true'
+
+    camera = models['workspace_rgbd_camera']
+    assert camera.findtext('pose') == '0.60 0.10 1.10 0 0.844 2.577'
+    sensor = camera.find("link/sensor[@type='rgbd_camera']")
+    assert sensor is not None
+    assert sensor.findtext('topic') == 'workspace_camera'
+    assert sensor.findtext('update_rate') == '15'
+    assert sensor.findtext('camera/image/width') == '640'
+    assert sensor.findtext('camera/image/height') == '480'
+    assert sensor.findtext('camera/optical_frame_id') == (
+        'camera_color_optical_frame'
+    )
+    assert world.find(
+        "plugin[@name='gz::sim::systems::Sensors']"
+    ) is not None
 
     target = models['workspace_target']
     assert target.find('static') is None
@@ -131,6 +150,12 @@ def test_world_contains_fixed_workcell_and_dynamic_target():
     assert target.findtext(
         'link/collision/surface/bounce/restitution_coefficient'
     ) == '0.0'
+    assert models['workspace_green_cube'].findtext('pose') == (
+        '-0.14 0.36 0.331 0 0 0'
+    )
+    assert models['workspace_blue_cube'].findtext('pose') == (
+        '0.16 0.62 0.331 0 0 0'
+    )
 
     subprocess.run(
         ['gz', 'sdf', '-k', str(world_file)],
@@ -138,6 +163,28 @@ def test_world_contains_fixed_workcell_and_dynamic_target():
         capture_output=True,
         text=True,
     )
+
+
+def test_rgbd_launch_bridges_topics_and_publishes_complete_tf():
+    launch_source = (
+        PACKAGE_ROOT / 'launch' / 'ur7e_gazebo.launch.py'
+    ).read_text(encoding='utf-8')
+
+    for topic in (
+        '/camera/color/image_raw',
+        '/camera/depth/image_raw',
+        '/camera/color/camera_info',
+    ):
+        assert topic in launch_source
+    for frame in (
+        'base_link',
+        'camera_link',
+        'camera_color_optical_frame',
+        'camera_depth_optical_frame',
+    ):
+        assert frame in launch_source
+    assert "'--pitch', '0.844'" in launch_source
+    assert "'--yaw', '2.577'" in launch_source
 
 
 def test_gazebo_task_uses_physical_contact_geometry():

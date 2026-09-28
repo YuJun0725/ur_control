@@ -23,6 +23,8 @@
   <exec_depend>ros_gz_interfaces</exec_depend>
   <exec_depend>ros_gz_sim</exec_depend>
   <exec_depend>rosgraph_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>ur7e_description</exec_depend>
   <exec_depend>ur7e_motion</exec_depend>
   <exec_depend>ur7e_moveit_config</exec_depend>

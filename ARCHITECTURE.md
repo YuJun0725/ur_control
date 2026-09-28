@@ -12,9 +12,13 @@ Robotiq 2F-85。系统同时保留 Mock Hardware 和 Gazebo 两种运行方式�
 
 ## 1. 先建立整体认识
 
-整个项目可以分成四层：
+整个项目可以分成五层：
 
 ```text
+感知层
+ur7e_vision：RGB-D 图像、颜色分割、深度反投影和 TF 坐标转换
+        ↓ 输出 base_link 下的目标坐标
+
 任务层
 ur7e_motion 中的 motion_command / fixed_task / pick-place 节点
         │
@@ -38,7 +42,7 @@ ros2_control
 └── gz_ros2_control：驱动 Gazebo 中的关节、碰撞、接触和摩擦
 ```
 
-四个 ROS 2 包的职责如下：
+五个 ROS 2 包的职责如下：
 
 | 包                     | 职责                   | 回答的问题                                 |
 | ---------------------- | ---------------------- | ------------------------------------------ |
@@ -46,6 +50,7 @@ ros2_control
 | `ur7e_moveit_config` | MoveIt 语义与规划配置  | 哪些关节一起规划，TCP 是谁，轨迹发给谁     |
 | `ur7e_motion`        | Python 控制接口和任务  | 如何用代码完成运动、避障、抓取和放置       |
 | `ur7e_gazebo`        | Gazebo 物理仿真        | 物理世界、控制器和动态方块怎样启动         |
+| `ur7e_vision`        | RGB-D 视觉感知         | 如何识别彩色方块并求出其三维坐标           |
 
 ## 2. 工作区根目录
 
@@ -465,7 +470,9 @@ Gazebo、外部 `move_group` 或 RViz。
 - 1 ms 仿真步长、实时倍率 1.0；
 - 地面、灯光和场景颜色；
 - 固定桌面、后墙、储物箱和中间隔断；
-- 质量 `0.08 kg`、摩擦系数 `1.0` 的动态目标方块。
+- 质量 `0.08 kg`、摩擦系数 `1.0` 的动态目标方块；
+- 固定在工作单元右前上方的 RGB-D 相机，输出 640×480 彩色图、深度图和内参；
+- Gazebo Sensors 系统使用 Ogre2，以 15 Hz 更新相机。
 
 使用 Bullet Featherstone 而不是 DART，是因为当前 Gazebo Harmonic 的 DART 后端无法
 创建 Robotiq 所需的 mimic 约束。
@@ -508,8 +515,10 @@ Gazebo 专用 ros2_control 配置：
 2. 以 `use_gazebo:=true` 展开组合 Xacro；
 3. 启动 `robot_state_publisher`；
 4. 桥接 `/clock` 和 `/world/default/set_pose`；
-5. 将机器人生成到 Gazebo；
-6. 机器人生成成功后加载三个控制器。
+5. 将 RGB-D 彩色图、深度图和相机内参桥接到 ROS 2；
+6. 发布 `base_link → camera_link → optical frame` 静态 TF；
+7. 将机器人生成到 Gazebo；
+8. 机器人生成成功后加载三个控制器。
 
 #### `launch/workspace_pick_place_gazebo.launch.py`
 
@@ -652,6 +661,9 @@ URDF mimic 关系
 | `rviz2_moveit`              | 显示机器人、规划轨迹和 PlanningScene               |
 | Gazebo`gz sim`              | 物理仿真世界                                       |
 | `clock_bridge`              | 将 Gazebo`/clock` 桥接到 ROS，并桥接方块复位服务 |
+| `rgbd_camera_bridge`        | 将 Gazebo RGB-D 数据桥接为 ROS 2 `sensor_msgs`      |
+| `color_cube_detector`       | 识别三色方块并发布 `base_link` 下的坐标             |
+| 三个相机静态 TF 节点       | 发布相机安装坐标系和两个 optical frame              |
 | `workspace_pick_place_demo` | 执行一次抓取任务，完成后退出                       |
 | MoveItPy 内部节点             | 在任务进程内进行状态监视、规划和轨迹执行           |
 
@@ -663,6 +675,11 @@ URDF mimic 关系
 | Topic   | `/tf`、`/tf_static`                                         | robot_state_publisher → 全系统    |
 | Topic   | `/planning_scene`                                             | SceneManager → move_group、RViz   |
 | Topic   | `/clock`                                                      | Gazebo → ROS 仿真时间             |
+| Topic   | `/camera/color/image_raw`                                     | Gazebo RGB-D → 视觉节点           |
+| Topic   | `/camera/depth/image_raw`                                     | Gazebo RGB-D → 视觉节点           |
+| Topic   | `/camera/color/camera_info`                                   | Gazebo RGB-D → 视觉节点           |
+| Topic   | `/color_cube_detector/detections/*/center`                    | 视觉节点 → 任务节点               |
+| Topic   | `/color_cube_detector/debug_image`                            | 带识别框和坐标的调试图            |
 | Action  | `/scaled_joint_trajectory_controller/follow_joint_trajectory` | MoveIt → UR7e 控制器              |
 | Action  | `/gripper_controller/follow_joint_trajectory`                 | GripperClient/MoveIt → 夹爪控制器 |
 | Service | `/controller_manager/list_controllers`                        | 查询控制器 active 状态             |
@@ -742,6 +759,9 @@ ur7e_gazebo_demo.launch.py
 | Gazebo 控制器容差/频率    | `gazebo_controllers.yaml`                                 |
 | Gazebo 桌面或方块物理参数 | `ur7e_workspace.sdf`                                      |
 | MoveIt 场景尺寸/抓取点    | 对应任务 YAML                                               |
+| Gazebo 相机位置/成像参数   | `ur7e_workspace.sdf` + `ur7e_gazebo.launch.py`              |
+| 颜色阈值和识别范围        | `ur7e_vision/config/color_cube_detector.yaml`                 |
+| 修改三维定位算法          | `ur7e_vision/color_detection.py`、`color_cube_detector.py`   |
 | 新增机械臂高层动作        | `moveit_client.py`                                        |
 | 新增夹爪动作              | `gripper_client.py`                                       |
 | 新增场景几何操作          | `scene_manager.py`                                        |

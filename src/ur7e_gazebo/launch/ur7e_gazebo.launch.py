@@ -99,6 +99,71 @@ def generate_launch_description():
             '/world/default/set_pose@ros_gz_interfaces/srv/SetEntityPose',
         ],
     )
+    # RGB-D 传感器在 Gazebo Transport 中发布数据；parameter_bridge 将三路数据
+    # 单向桥接为标准 ROS 2 sensor_msgs。深度图和彩色图已经由同一个 RGB-D
+    # 传感器配准，所以共用一份 CameraInfo 和 color optical frame。
+    rgbd_camera_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='rgbd_camera_bridge',
+        output='screen',
+        arguments=[
+            '/workspace_camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/workspace_camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
+            (
+                '/workspace_camera/camera_info@'
+                'sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'
+            ),
+        ],
+        remappings=[
+            ('/workspace_camera/image', '/camera/color/image_raw'),
+            ('/workspace_camera/depth_image', '/camera/depth/image_raw'),
+            ('/workspace_camera/camera_info', '/camera/color/camera_info'),
+        ],
+    )
+
+    # 相机是世界中的静态模型，而 base_link 与 Gazebo 世界原点重合。因此这里的
+    # 平移和 RPY 必须与 ur7e_workspace.sdf 中 workspace_rgbd_camera 的 pose 一致。
+    camera_mount_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='camera_mount_tf',
+        output='screen',
+        arguments=[
+            '--x', '0.60', '--y', '0.10', '--z', '1.10',
+            '--roll', '0.0', '--pitch', '0.844', '--yaw', '2.577',
+            '--frame-id', 'base_link',
+            '--child-frame-id', 'camera_link',
+        ],
+    )
+    # ROS 相机光学坐标系：Z 向前、X 向右、Y 向下。RGB-D 的深度和彩色成像
+    # 原点重合，因此两个 optical frame 使用同一静态变换。
+    camera_color_optical_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='camera_color_optical_tf',
+        output='screen',
+        arguments=[
+            '--x', '0', '--y', '0', '--z', '0',
+            '--roll', '-1.57079632679', '--pitch', '0',
+            '--yaw', '-1.57079632679',
+            '--frame-id', 'camera_link',
+            '--child-frame-id', 'camera_color_optical_frame',
+        ],
+    )
+    camera_depth_optical_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='camera_depth_optical_tf',
+        output='screen',
+        arguments=[
+            '--x', '0', '--y', '0', '--z', '0',
+            '--roll', '-1.57079632679', '--pitch', '0',
+            '--yaw', '-1.57079632679',
+            '--frame-id', 'camera_link',
+            '--child-frame-id', 'camera_depth_optical_frame',
+        ],
+    )
     # create 节点从 /robot_description 读取展开后的 URDF/SDF，并生成名为 ur7e_robotiq
     # 的 Gazebo 模型。模型生成成功后才允许加载控制器。
     spawn_robot = Node(
@@ -150,6 +215,10 @@ def generate_launch_description():
             OpaqueFunction(function=_gazebo_include),
             robot_state_publisher,
             clock_bridge,
+            rgbd_camera_bridge,
+            camera_mount_tf,
+            camera_color_optical_tf,
+            camera_depth_optical_tf,
             spawn_robot,
             # 防止 controller_manager 尚未创建就调用 spawner。
             RegisterEventHandler(
