@@ -7,6 +7,7 @@ import pytest
 from ur7e_motion import MotionPlanningError
 from ur7e_motion.fixed_task import READY
 from ur7e_motion.pick_place_demo import GRIPPER_TOUCH_LINKS
+from ur7e_motion.visual_target import VisualTarget, VisualTargetUnavailableError
 from ur7e_motion.workspace_pick_place_demo import (
     _read_config,
     BACK_WALL_COLOR,
@@ -106,8 +107,12 @@ class FakeScene:
     def __init__(self, calls):
         self.calls = calls
 
-    def add_box(self, object_id, size, position, *, color=None):
-        self.calls.append(('add_box', object_id, size, position, color))
+    def add_box(self, object_id, size, position, *, color=None,
+                orientation=None):
+        call = ('add_box', object_id, size, position, color)
+        if orientation is not None:
+            call += (orientation,)
+        self.calls.append(call)
 
     def set_object_touch_allowed(self, object_id, links, allowed):
         self.calls.append(('touch', object_id, tuple(links), allowed))
@@ -204,6 +209,32 @@ def test_static_scene_can_be_loaded_before_recovery_to_ready():
     assert calls[4] == ('joint', READY)
 
 
+def test_divider_padding_only_expands_planning_collision_box():
+    """Padding expands each divider face without changing its center or peers."""
+    calls = []
+    config = _config()
+    config = WorkspacePickPlaceConfig(
+        **{**config.__dict__, 'center_divider_padding': 0.02}
+    )
+
+    execute_workspace_pick_place(
+        FakeArm(calls), FakeGripper(calls), FakeScene(calls), config,
+        sleep_fn=lambda _: None,
+    )
+
+    divider = next(
+        call for call in calls
+        if call[0] == 'add_box' and call[1] == CENTER_DIVIDER_ID
+    )
+    assert divider[2] == pytest.approx([0.10, 0.22, 0.28])
+    assert divider[3] == [0.02, 0.47, 0.42]
+    table = next(
+        call for call in calls
+        if call[0] == 'add_box' and call[1] == TABLE_ID
+    )
+    assert table[2] == [0.70, 0.45, 0.30]
+
+
 def test_pregrasp_failure_only_cleans_dynamic_target():
     """A failed route does not clear static objects or command later motion."""
     calls = []
@@ -275,9 +306,51 @@ def test_gripper_close_failure_cleans_touch_permission_and_target():
         ({'grasp_position': 0.81}, 'grasp_position'),
         ({'gripper_duration': 0.0}, 'gripper_duration'),
         ({'scene_wait_seconds': -0.1}, 'scene_wait_seconds'),
+        ({'center_divider_padding': -0.01}, 'center_divider_padding'),
     ],
 )
 def test_invalid_workspace_parameters_are_rejected(overrides, message):
     """Invalid scene or motion values fail before MoveIt clients are created."""
     with pytest.raises(ValueError, match=message):
         _read_config(FakeParameterNode(overrides))
+
+
+def test_visual_target_replaces_fixed_target_and_rotates_grasp():
+    calls = []
+    target = VisualTarget((0.12, 0.44, 0.33), 0.2)
+
+    execute_workspace_pick_place(
+        FakeArm(calls), FakeGripper(calls), FakeScene(calls), _config(),
+        target_provider=lambda: target,
+        sleep_fn=lambda _: None,
+    )
+
+    target_box = next(
+        call for call in calls
+        if call[0] == 'add_box' and call[1] == TARGET_ID
+    )
+    assert target_box[3] == [0.12, 0.44, 0.33]
+    assert target_box[5][2] == pytest.approx(0.0998334)
+    pose_calls = [call for call in calls if call[0] == 'pose']
+    assert pose_calls[0][1] == [0.12, 0.44, 0.40]
+    assert pose_calls[1][1] == [0.12, 0.44, 0.30]
+    assert pose_calls[0][2][2] == pytest.approx(0.0998334)
+
+
+def test_missing_visual_target_stops_before_target_scene_and_motion():
+    calls = []
+
+    def no_target():
+        raise VisualTargetUnavailableError('camera unavailable')
+
+    with pytest.raises(VisualTargetUnavailableError):
+        execute_workspace_pick_place(
+            FakeArm(calls), FakeGripper(calls), FakeScene(calls), _config(),
+            target_provider=no_target,
+            sleep_fn=lambda _: None,
+        )
+
+    assert not any(call[0] == 'pose' for call in calls)
+    assert not any(
+        call[0] == 'add_box' and call[1] == TARGET_ID for call in calls
+    )

@@ -5,6 +5,7 @@
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 import math
 import time
 from typing import Any
@@ -34,6 +35,16 @@ JOINT_NAMES = (
 PLANNING_CANDIDATES = 3
 # Gazebo 中 /clock 与 /joint_states 可能相差一个调度周期，因此允许状态最多早 0.5 秒。
 STATE_FRESHNESS_TOLERANCE_SECONDS = 0.5
+
+
+@dataclass(frozen=True)
+class _PlannedCandidate:
+    """MoveIt 已验证的候选轨迹及其路程指标。"""
+
+    joint_length: float
+    tcp_length: float | None
+    result: Any
+    source: str
 
 
 class UR7eMotionError(RuntimeError):
@@ -137,7 +148,7 @@ class UR7eMoveItClient:
         # 输入检查会确保恰好 6 个有限数值，防止错误数据进入规划器。
         joint_positions = validate_numeric_vector("positions", positions, 6)
         # 每一步都从最新实际状态规划，而不是假定上一步一定精确到位。
-        self._prepare_current_start_state()
+        current_state = self._prepare_current_start_state()
 
         # RobotState 是 MoveIt 的“某一时刻完整机器人关节状态”。此处只设置 6 个臂关节。
         goal_state = RobotState(self._moveit.get_robot_model())
@@ -149,7 +160,7 @@ class UR7eMoveItClient:
             raise MotionPlanningError("MoveIt rejected the requested joint goal")
 
         self._logger.info(f"Planning joint goal (rad): {joint_positions}")
-        self._plan_and_execute()
+        self._plan_and_execute(current_state)
 
     def move_to_pose(
         self,
@@ -169,17 +180,15 @@ class UR7eMoveItClient:
             raise ValueError("frame_id must not be empty")
 
         # 四元数会归一化，避免非单位四元数导致无效姿态。
-        self._prepare_current_start_state()
+        current_state = self._prepare_current_start_state()
         goal = self._make_pose_goal(
             target_position, target_orientation, frame_id.strip()
         )
-        self._set_pose_goal(goal)
-
         self._logger.info(
             f"Planning absolute {END_EFFECTOR_LINK} pose in {frame_id}: "
             f"position={target_position}, orientation={target_orientation}"
         )
-        self._plan_and_execute()
+        self._plan_pose_and_execute(goal, current_state)
 
     def move_by_translation(self, translation: Sequence[float]) -> None:
         """在 base_link 下将当前 TCP 相对平移 ``[dx, dy, dz]`` 米。
@@ -204,13 +213,11 @@ class UR7eMoveItClient:
             current_pose.orientation.w,
         ]
         goal = self._make_pose_goal(position, orientation, REFERENCE_FRAME)
-        self._set_pose_goal(goal)
-
         self._logger.info(
             f"Planning {END_EFFECTOR_LINK} translation in {REFERENCE_FRAME} "
             f"(m): {offset}"
         )
-        self._plan_and_execute()
+        self._plan_pose_and_execute(goal, current_state)
 
     def _prepare_current_start_state(self) -> Any:
         """等待最新状态，并把它设置为下一次规划的起点。"""
@@ -283,50 +290,159 @@ class UR7eMoveItClient:
         ):
             raise MotionPlanningError("MoveIt rejected the requested pose goal")
 
-    def _plan_and_execute(self) -> None:
-        """多次规划，选择关节路径较短的可行轨迹，然后交给控制器执行。"""
-        candidates: list[tuple[float, Any]] = []
-        last_error = None
-        for candidate_number in range(1, PLANNING_CANDIDATES + 1):
-            # 每次 plan() 都会让 OMPL 重新随机采样，因此可能得到不同的无碰撞路径。
+    def _nearest_valid_ik_goal(self, goal: Any, current_state: Any) -> Any | None:
+        """从当前关节状态求靠近它的 IK 解，并先检查整个机器人是否碰撞。
+
+        这只是一条额外的目标分支；无解或碰撞时保留原来的位姿目标规划。
+        """
+        if goal.header.frame_id != REFERENCE_FRAME:
+            return None
+
+        from moveit.core.robot_state import RobotState
+
+        try:
+            nearby = RobotState(self._moveit.get_robot_model())
+            nearby.joint_positions = dict(current_state.joint_positions)
+            nearby.update()
+            if not nearby.set_from_ik(
+                PLANNING_GROUP, goal.pose, END_EFFECTOR_LINK, 0.1
+            ):
+                self._logger.info("Nearby IK goal unavailable; using pose goal")
+                return None
+            nearby.update()
+            with self._scene_monitor.read_only() as scene:
+                if not scene.is_state_valid(nearby, PLANNING_GROUP):
+                    self._logger.info(
+                        "Nearby IK goal collides with the planning scene; "
+                        "using pose goal"
+                    )
+                    return None
+            return nearby
+        except (RuntimeError, ValueError, TypeError) as exc:
+            # 近邻 IK 是可选优化；失败时不跳过 MoveIt 原有的目标搜索。
+            self._logger.warning(
+                f"Nearby IK goal check failed ({exc}); using pose goal"
+            )
+            return None
+
+    def _plan_pose_and_execute(
+        self, goal: Any, current_state: Any
+    ) -> None:
+        """在三次规划预算内比较近邻 IK 与普通位姿目标候选。"""
+        candidates: list[_PlannedCandidate] = []
+        last_error: Any = None
+        preferred_attempts = 0
+        nearby = self._nearest_valid_ik_goal(goal, current_state)
+        if nearby is not None:
+            if self._arm.set_goal_state(robot_state=nearby):
+                preferred_attempts = 1
+                self._logger.info(
+                    "Planning one nearby-IK candidate from current joints"
+                )
+                preferred, last_error = self._collect_candidates(
+                    1, "nearby-IK", current_state
+                )
+                candidates.extend(preferred)
+            else:
+                self._logger.warning(
+                    "MoveIt rejected nearby IK goal; using pose goal"
+                )
+
+        # 无论近邻目标是否成功，都保留一般位姿目标的候选。只有全部规划完成后
+        # 才比较并执行，不能先执行近邻解再尝试回退。
+        self._set_pose_goal(goal)
+        regular, regular_error = self._collect_candidates(
+            PLANNING_CANDIDATES - preferred_attempts,
+            "pose", current_state,
+        )
+        candidates.extend(regular)
+        self._execute_best_candidate(
+            candidates, regular_error or last_error
+        )
+
+    def _plan_and_execute(self, current_state: Any | None = None) -> None:
+        """为关节目标规划三次，再执行已验证候选中的最短路径。"""
+        candidates, last_error = self._collect_candidates(
+            PLANNING_CANDIDATES, "joint", current_state
+        )
+        self._execute_best_candidate(candidates, last_error)
+
+    def _collect_candidates(
+        self, count: int, source: str, current_state: Any | None
+    ) -> tuple[list[_PlannedCandidate], Any]:
+        """只收集规划成功的轨迹，计算关节路程和 TCP 空间路程。"""
+        candidates: list[_PlannedCandidate] = []
+        last_error: Any = None
+        for candidate_number in range(1, count + 1):
             candidate = self._arm.plan(
                 single_plan_parameters=self._plan_parameters
             )
             if not candidate:
                 last_error = candidate.error_code
                 self._logger.warning(
-                    f"Planning candidate {candidate_number}/"
-                    f"{PLANNING_CANDIDATES} failed: {last_error}; "
-                    "excluding it from trajectory selection"
+                    f"{source} candidate {candidate_number}/{count} failed: "
+                    f"{last_error}; excluding it from trajectory selection"
                 )
                 continue
 
-            # 以六关节在相邻轨迹点间的欧氏距离累计值衡量“关节空间路径长度”。
-            # 它不是严格的时间最短或能耗最小指标，但能剔除明显绕远的候选路径。
-            path_length = _joint_path_length(candidate.trajectory)
-            candidates.append((path_length, candidate))
-            self._logger.info(
-                f"Planning candidate {candidate_number}/"
-                f"{PLANNING_CANDIDATES} succeeded: "
-                f"joint-space length={path_length:.4f} rad"
+            joint_length = _joint_path_length(candidate.trajectory)
+            tcp_length = self._measure_tcp_path_length(
+                candidate.trajectory, current_state
             )
+            candidates.append(
+                _PlannedCandidate(
+                    joint_length, tcp_length, candidate, source
+                )
+            )
+            tcp_text = (
+                f", TCP length={tcp_length:.4f} m"
+                if tcp_length is not None else ""
+            )
+            self._logger.info(
+                f"{source} candidate {candidate_number}/{count} succeeded: "
+                f"joint-space length={joint_length:.4f} rad{tcp_text}"
+            )
+        return candidates, last_error
 
+    def _measure_tcp_path_length(
+        self, trajectory: Any, current_state: Any | None
+    ) -> float | None:
+        """用正运动学统计 TCP 路程；诊断失败不改变安全规划结果。"""
+        if current_state is None:
+            return None
+        from moveit.core.robot_state import RobotState
+
+        try:
+            state = RobotState(self._moveit.get_robot_model())
+            state.joint_positions = dict(current_state.joint_positions)
+            state.update()
+            return _tcp_path_length(trajectory, state)
+        except (RuntimeError, ValueError, TypeError, MotionPlanningError) as exc:
+            self._logger.warning(f"TCP path measurement unavailable: {exc}")
+            return None
+
+    def _execute_best_candidate(
+        self, candidates: list[_PlannedCandidate], last_error: Any
+    ) -> None:
+        """保留已验证候选中关节路程最短的一条，执行失败不重试。"""
         if not candidates:
             raise MotionPlanningError(
                 "Motion planning produced no valid trajectory after "
                 f"{PLANNING_CANDIDATES} candidates: {last_error}"
             )
 
-        # 只在至少存在一条规划成功且经 MoveIt 验证的轨迹时才发送给控制器。
-        path_length, plan_result = min(candidates, key=lambda item: item[0])
-        self._logger.info(
-            f"Selected shortest of {len(candidates)} valid candidates: "
-            f"joint-space length={path_length:.4f} rad; executing trajectory"
+        best = min(candidates, key=lambda item: item.joint_length)
+        tcp_text = (
+            f", TCP length={best.tcp_length:.4f} m"
+            if best.tcp_length is not None else ""
         )
-        # controllers=[] 表示由 MoveIt 根据 moveit_controllers.yaml 自动选择能够控制
-        # 这些关节的控制器，而不是在代码中写死控制器名称。
+        self._logger.info(
+            f"Selected shortest of {len(candidates)} valid candidates "
+            f"({best.source}): joint-space length={best.joint_length:.4f} rad"
+            f"{tcp_text}; executing trajectory"
+        )
         execution_status = self._moveit.execute(
-            plan_result.trajectory, controllers=[]
+            best.result.trajectory, controllers=[]
         )
         if not execution_status:
             raise MotionExecutionError(
@@ -350,4 +466,36 @@ def _joint_path_length(trajectory: Any) -> float:
             )
         # math.dist() 计算两个六维关节角向量的欧氏距离，再对所有相邻点累加。
         path_length += math.dist(previous.positions, current.positions)
+    return path_length
+
+
+def _tcp_path_length(trajectory: Any, state: Any) -> float:
+    """从轨迹关节角做正运动学，累计 robotiq_tcp 的空间路程（米）。"""
+    joint_trajectory = trajectory.get_robot_trajectory_msg().joint_trajectory
+    names = tuple(joint_trajectory.joint_names)
+    if not names or not joint_trajectory.points:
+        raise MotionPlanningError("Planned trajectory has no joint samples")
+    if len(names) != len(set(names)):
+        raise MotionPlanningError("Planned trajectory has duplicate joints")
+
+    baseline = dict(state.joint_positions)
+    previous_position: tuple[float, float, float] | None = None
+    path_length = 0.0
+    for point in joint_trajectory.points:
+        if len(point.positions) != len(names):
+            raise MotionPlanningError(
+                "Planned trajectory has inconsistent joint dimensions"
+            )
+        state.joint_positions = {
+            **baseline,
+            **dict(zip(names, point.positions, strict=True)),
+        }
+        state.update()
+        position = state.get_pose(END_EFFECTOR_LINK).position
+        current_position = (position.x, position.y, position.z)
+        if not all(math.isfinite(value) for value in current_position):
+            raise MotionPlanningError("Planned TCP path has non-finite values")
+        if previous_position is not None:
+            path_length += math.dist(previous_position, current_position)
+        previous_position = current_position
     return path_length

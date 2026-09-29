@@ -1,8 +1,10 @@
 """Detect red, green and blue cubes and publish their 3D base coordinates."""
 
+import math
+
 import cv2
 from cv_bridge import CvBridge, CvBridgeError
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 import message_filters
 import numpy as np
 import rclpy
@@ -11,16 +13,15 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image
-from tf2_geometry_msgs import do_transform_point
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 from .color_detection import (
     create_hsv_mask,
-    deproject_pixel,
     depth_to_meters,
+    estimate_cuboid_pose,
     find_color_candidates,
-    median_contour_depth,
+    quaternion_rotation_matrix,
 )
 
 
@@ -48,6 +49,18 @@ class ColorCubeDetector(Node):
         self._min_fill = float(self.get_parameter('min_fill_ratio').value)
         self._min_depth = float(self.get_parameter('min_depth').value)
         self._max_depth = float(self.get_parameter('max_depth').value)
+        self._object_size = np.asarray(
+            self.get_parameter('object_size').value, dtype=np.float64
+        )
+        if (self._object_size.shape != (3,)
+                or not np.all(np.isfinite(self._object_size))
+                or np.any(self._object_size <= 0)):
+            raise ValueError('object_size must contain 3 positive values')
+        self._top_band = float(self.get_parameter('top_band').value)
+        self._min_top_points = int(self.get_parameter('min_top_points').value)
+        if (not math.isfinite(self._top_band)
+                or self._top_band <= 0 or self._min_top_points < 3):
+            raise ValueError('top_band and min_top_points must be positive')
         self._workspace_min = np.asarray(
             self.get_parameter('workspace_min').value, dtype=np.float64
         )
@@ -61,6 +74,12 @@ class ColorCubeDetector(Node):
         self._point_publishers = {
             color: self.create_publisher(
                 PointStamped, f'~/detections/{color}/center', 10
+            )
+            for color in self._hsv_ranges
+        }
+        self._pose_publishers = {
+            color: self.create_publisher(
+                PoseStamped, f'~/detections/{color}/pose', 10
             )
             for color in self._hsv_ranges
         }
@@ -111,6 +130,9 @@ class ColorCubeDetector(Node):
         self.declare_parameter('min_fill_ratio', 0.35)
         self.declare_parameter('min_depth', 0.10)
         self.declare_parameter('max_depth', 3.0)
+        self.declare_parameter('object_size', [0.035, 0.035, 0.060])
+        self.declare_parameter('top_band', 0.006)
+        self.declare_parameter('min_top_points', 20)
         self.declare_parameter('workspace_min', [-0.32, 0.25, 0.29])
         self.declare_parameter('workspace_max', [0.32, 0.70, 0.40])
         self.declare_parameter('red_hsv_lower_1', [0, 100, 60])
@@ -188,9 +210,20 @@ class ColorCubeDetector(Node):
             self.get_logger().warning(f'Camera transform unavailable: {error}')
             return
 
+        rotation = transform.transform.rotation
+        translation = transform.transform.translation
+        camera_to_base = np.eye(4)
+        camera_to_base[:3, :3] = quaternion_rotation_matrix(
+            (rotation.x, rotation.y, rotation.z, rotation.w)
+        )
+        camera_to_base[:3, 3] = (
+            translation.x, translation.y, translation.z
+        )
+
         hsv_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV)
         debug_image = bgr_image.copy()
         detections: dict[str, PointStamped] = {}
+        poses: dict[str, PoseStamped] = {}
         for color, ranges in self._hsv_ranges.items():
             mask = create_hsv_mask(hsv_image, ranges)
             candidates = find_color_candidates(
@@ -202,38 +235,42 @@ class ColorCubeDetector(Node):
                 self._min_fill,
             )
             for candidate in candidates:
-                depth = median_contour_depth(
+                estimate = estimate_cuboid_pose(
                     depth_meters,
                     candidate.contour,
-                    self._min_depth,
-                    self._max_depth,
+                    (fx, fy, cx, cy),
+                    camera_to_base,
+                    self._object_size,
+                    min_depth=self._min_depth,
+                    max_depth=self._max_depth,
+                    top_band=self._top_band,
+                    min_top_points=self._min_top_points,
                 )
-                if depth is None:
+                if estimate is None:
                     continue
-                camera_xyz = deproject_pixel(
-                    candidate.center[0], candidate.center[1], depth,
-                    fx, fy, cx, cy,
-                )
-                camera_point = PointStamped()
-                camera_point.header = color_msg.header
-                camera_point.point.x = camera_xyz[0]
-                camera_point.point.y = camera_xyz[1]
-                camera_point.point.z = camera_xyz[2]
-                base_point = do_transform_point(camera_point, transform)
-                point_array = np.array(
-                    [base_point.point.x, base_point.point.y, base_point.point.z]
-                )
+                point_array = np.asarray(estimate.center)
                 if not np.all(point_array >= self._workspace_min) or not np.all(
                     point_array <= self._workspace_max
                 ):
                     continue
+                base_point = PointStamped()
+                base_point.header.stamp = color_msg.header.stamp
                 base_point.header.frame_id = self._base_frame
+                (base_point.point.x, base_point.point.y,
+                 base_point.point.z) = estimate.center
+                pose = PoseStamped()
+                pose.header = base_point.header
+                pose.pose.position = base_point.point
+                pose.pose.orientation.z = math.sin(estimate.yaw / 2)
+                pose.pose.orientation.w = math.cos(estimate.yaw / 2)
                 detections[color] = base_point
+                poses[color] = pose
                 self._point_publishers[color].publish(base_point)
+                self._pose_publishers[color].publish(pose)
                 self._draw_detection(debug_image, color, candidate, base_point)
                 break
 
-        self._publish_markers(detections, color_msg)
+        self._publish_markers(poses, color_msg)
         debug_msg = self._bridge.cv2_to_imgmsg(debug_image, encoding='bgr8')
         debug_msg.header = color_msg.header
         self._debug_publisher.publish(debug_msg)
@@ -271,11 +308,11 @@ class ColorCubeDetector(Node):
                 marker.action = Marker.DELETE
                 marker_array.markers.append(marker)
                 continue
-            marker.type = Marker.SPHERE
+            marker.type = Marker.CUBE
             marker.action = Marker.ADD
-            marker.pose.position = detections[color].point
-            marker.pose.orientation.w = 1.0
-            marker.scale.x = marker.scale.y = marker.scale.z = 0.025
+            marker.pose = detections[color].pose
+            (marker.scale.x, marker.scale.y,
+             marker.scale.z) = self._object_size.tolist()
             b, g, r = DISPLAY_COLORS[color]
             marker.color.r = r / 255.0
             marker.color.g = g / 255.0

@@ -149,7 +149,7 @@
     </model>
 
     <model name="workspace_target">
-      <pose>0.16 0.47 0.331 0 0 0</pose>
+      <pose>0.22 0.47 0.331 0 0 0</pose>
       <allow_auto_disable>false</allow_auto_disable>
       <link name="link">
         <inertial>

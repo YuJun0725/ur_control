@@ -48,6 +48,7 @@ class ExitCode(IntEnum):
     EXECUTION_FAILED = 6
     SCENE_FAILED = 7
     GRIPPER_FAILED = 8
+    VISION_FAILED = 9
     INTERNAL_ERROR = 10
 
 

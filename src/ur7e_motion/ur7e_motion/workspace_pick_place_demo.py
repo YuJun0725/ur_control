@@ -28,6 +28,11 @@ from ur7e_motion.fixed_task import READY
 from ur7e_motion.motion_command import ExitCode
 from ur7e_motion.pick_place_demo import GRIPPER_TOUCH_LINKS, TCP_LINK
 from ur7e_motion.validation import validate_numeric_vector
+from ur7e_motion.visual_target import (
+    VisualTarget,
+    VisualTargetUnavailableError,
+    wait_for_visual_target,
+)
 
 
 # PlanningScene 物体的稳定 ID：重复运行时同 ID 会覆盖旧物体，而不是不断累积。
@@ -72,7 +77,12 @@ class WorkspacePickPlaceConfig:
     grasp_position: float
     gripper_duration: float
     scene_wait_seconds: float
+    center_divider_padding: float = 0.0
     static_scene_before_ready: bool = False
+    use_vision_target: bool = False
+    vision_target_topic: str = '/color_cube_detector/detections/red/pose'
+    vision_timeout_seconds: float = 10.0
+    vision_max_age_seconds: float = 0.5
 
 
 def execute_workspace_pick_place(
@@ -82,6 +92,7 @@ def execute_workspace_pick_place(
     config: WorkspacePickPlaceConfig,
     *,
     sleep_fn: Callable[[float], None] = time.sleep,
+    target_provider: Callable[[], VisualTarget] | None = None,
 ) -> None:
     """执行一次完整抓取流程，成功后保留场景供 RViz 观察。
 
@@ -92,6 +103,8 @@ def execute_workspace_pick_place(
     attached = False
     touch_allowed = False
     target_added = False
+    if config.use_vision_target and target_provider is None:
+        raise VisualTargetUnavailableError('Visual target provider is missing')
 
     try:
         # Gazebo 中障碍物在物理世界里启动时就存在。重复运行时若机器人不在 READY，
@@ -111,12 +124,25 @@ def execute_workspace_pick_place(
 
         if not config.static_scene_before_ready:
             _add_static_workcell(scene, config)
+        # 视觉模式必须先得到新鲜且通过范围校验的方块中心；失败则停止任务。
+        target = (
+            target_provider() if target_provider is not None
+            else VisualTarget(tuple(config.target_position), 0.0)
+        )
+        target_position = list(target.position)
+        if target_provider is not None:
+            orientation = _rotate_downward_orientation(orientation, target.yaw)
         # 目标先作为世界碰撞物体存在：此时 MoveIt 会把它当作不可穿透的障碍物。
+        target_box_options = {'color': TARGET_COLOR}
+        if target_provider is not None:
+            target_box_options['orientation'] = (
+                0.0, 0.0, math.sin(target.yaw / 2), math.cos(target.yaw / 2)
+            )
         scene.add_box(
             TARGET_ID,
             config.target_size,
-            config.target_position,
-            color=TARGET_COLOR,
+            target_position,
+            **target_box_options,
         )
         target_added = True
         _sleep_if_positive(config.scene_wait_seconds, sleep_fn)
@@ -131,7 +157,7 @@ def execute_workspace_pick_place(
         # 从物体中心和配置偏移推导四个 TCP 点；lift_translation 同时定义预抓取高度、
         # 抬升高度和放置后的退出高度。
         source_grasp_tcp = _add_vectors(
-            config.target_position, config.grasp_tcp_offset
+            target_position, config.grasp_tcp_offset
         )
         source_pregrasp_tcp = _add_vectors(
             source_grasp_tcp, config.lift_translation
@@ -188,6 +214,12 @@ def execute_workspace_pick_place(
 
 def _add_static_workcell(scene: Any, config: WorkspacePickPlaceConfig) -> None:
     """向 MoveIt 添加或覆盖桌面、后墙、储物箱和中间隔断。"""
+    # 仅扩大 MoveIt 中的隔断碰撞盒；Gazebo 物理障碍物尺寸保持原样。
+    # padding 是每个面的余量，因此总长/宽/高各增加 2 * padding。
+    divider_planning_size = [
+        dimension + 2.0 * config.center_divider_padding
+        for dimension in config.center_divider_size
+    ]
     for object_id, size, position, color in (
         (TABLE_ID, config.table_size, config.table_position, TABLE_COLOR),
         (
@@ -204,12 +236,26 @@ def _add_static_workcell(scene: Any, config: WorkspacePickPlaceConfig) -> None:
         ),
         (
             CENTER_DIVIDER_ID,
-            config.center_divider_size,
+            divider_planning_size,
             config.center_divider_position,
             CENTER_DIVIDER_COLOR,
         ),
     ):
         scene.add_box(object_id, size, position, color=color)
+
+
+def _rotate_downward_orientation(
+    ready: list[float], yaw: float
+) -> list[float]:
+    """保持 READY 的向下姿态，同时对齐方块在桌面上的水平朝向。"""
+    x, y, z, w = ready
+    cosine, sine = math.cos(yaw / 2), math.sin(yaw / 2)
+    return [
+        cosine * x - sine * y,
+        sine * x + cosine * y,
+        cosine * z + sine * w,
+        cosine * w - sine * z,
+    ]
 
 
 def _add_vectors(first: list[float], second: list[float]) -> list[float]:
@@ -245,6 +291,7 @@ def _read_config(node: Any) -> WorkspacePickPlaceConfig:
         'storage_box_position': [-0.26, 0.62, 0.40],
         'center_divider_size': [0.06, 0.18, 0.24],
         'center_divider_position': [0.02, 0.47, 0.42],
+        'center_divider_padding': 0.0,
         'target_size': [0.035, 0.035, 0.060],
         'target_position': [0.16, 0.47, 0.34],
         'place_position': [0.16, 0.32, 0.34],
@@ -254,6 +301,10 @@ def _read_config(node: Any) -> WorkspacePickPlaceConfig:
         'gripper_duration': 1.0,
         'scene_wait_seconds': 0.5,
         'static_scene_before_ready': False,
+        'use_vision_target': False,
+        'vision_target_topic': '/color_cube_detector/detections/red/pose',
+        'vision_timeout_seconds': 10.0,
+        'vision_max_age_seconds': 0.5,
     }
     for name, default in defaults.items():
         node.declare_parameter(name, default)
@@ -297,11 +348,31 @@ def _read_config(node: Any) -> WorkspacePickPlaceConfig:
     if scene_wait_seconds < 0.0:
         raise ValueError('scene_wait_seconds must not be negative')
 
+    center_divider_padding = _read_finite_number(
+        node, 'center_divider_padding'
+    )
+    if center_divider_padding < 0.0:
+        raise ValueError('center_divider_padding must not be negative')
+
     static_scene_before_ready = node.get_parameter(
         'static_scene_before_ready'
     ).value
     if not isinstance(static_scene_before_ready, bool):
         raise ValueError('static_scene_before_ready must be a bool')
+
+    use_vision_target = node.get_parameter('use_vision_target').value
+    if not isinstance(use_vision_target, bool):
+        raise ValueError('use_vision_target must be a bool')
+    vision_target_topic = node.get_parameter('vision_target_topic').value
+    if (
+        not isinstance(vision_target_topic, str)
+        or not vision_target_topic.startswith('/')
+    ):
+        raise ValueError('vision_target_topic must be an absolute topic name')
+    vision_timeout_seconds = _read_finite_number(node, 'vision_timeout_seconds')
+    vision_max_age_seconds = _read_finite_number(node, 'vision_max_age_seconds')
+    if vision_timeout_seconds <= 0 or vision_max_age_seconds <= 0:
+        raise ValueError('vision timeout and max age must be positive')
 
     lift_translation = values['lift_translation']
     if lift_translation[2] <= 0.0:
@@ -324,7 +395,12 @@ def _read_config(node: Any) -> WorkspacePickPlaceConfig:
         grasp_position=grasp_position,
         gripper_duration=gripper_duration,
         scene_wait_seconds=scene_wait_seconds,
+        center_divider_padding=center_divider_padding,
         static_scene_before_ready=static_scene_before_ready,
+        use_vision_target=use_vision_target,
+        vision_target_topic=vision_target_topic,
+        vision_timeout_seconds=vision_timeout_seconds,
+        vision_max_age_seconds=vision_max_age_seconds,
     )
 
 
@@ -358,7 +434,23 @@ def _run(node: Any, config: WorkspacePickPlaceConfig) -> ExitCode:
             'Starting workspace pick-place demo: READY -> avoid divider '
             '-> PICK -> PLACE -> READY'
         )
-        execute_workspace_pick_place(_MOVEIT_CLIENT, _GRIPPER_CLIENT, scene, config)
+        target_provider = None
+        if config.use_vision_target:
+            def get_visual_target():
+                return wait_for_visual_target(
+                    node,
+                    config.vision_target_topic,
+                    timeout_seconds=config.vision_timeout_seconds,
+                    max_age_seconds=config.vision_max_age_seconds,
+                    table_position=config.table_position,
+                    table_size=config.table_size,
+                    object_size=config.target_size,
+                )
+            target_provider = get_visual_target
+        execute_workspace_pick_place(
+            _MOVEIT_CLIENT, _GRIPPER_CLIENT, scene, config,
+            target_provider=target_provider,
+        )
         node.get_logger().info(
             'Workspace pick-place demo completed; scene remains in RViz'
         )
@@ -381,6 +473,9 @@ def _run(node: Any, config: WorkspacePickPlaceConfig) -> ExitCode:
     except GripperControlError as exc:
         node.get_logger().error(f'Workspace demo stopped: {exc}')
         return ExitCode.GRIPPER_FAILED
+    except VisualTargetUnavailableError as exc:
+        node.get_logger().error(f'Workspace demo stopped: {exc}')
+        return ExitCode.VISION_FAILED
     except Exception as exc:
         node.get_logger().error(
             f'Unexpected workspace demo error: {type(exc).__name__}: {exc}'

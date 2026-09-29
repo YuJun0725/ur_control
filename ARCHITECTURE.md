@@ -16,8 +16,8 @@ Robotiq 2F-85。系统同时保留 Mock Hardware 和 Gazebo 两种运行方式�
 
 ```text
 感知层
-ur7e_vision：RGB-D 图像、颜色分割、深度反投影和 TF 坐标转换
-        ↓ 输出 base_link 下的目标坐标
+ur7e_vision：RGB-D、颜色分割、顶面拟合和已知尺寸几何中心估计
+        ↓ 输出 base_link 下的目标中心与偏航姿态（PoseStamped）
 
 任务层
 ur7e_motion 中的 motion_command / fixed_task / pick-place 节点
@@ -678,7 +678,8 @@ URDF mimic 关系
 | Topic   | `/camera/color/image_raw`                                     | Gazebo RGB-D → 视觉节点           |
 | Topic   | `/camera/depth/image_raw`                                     | Gazebo RGB-D → 视觉节点           |
 | Topic   | `/camera/color/camera_info`                                   | Gazebo RGB-D → 视觉节点           |
-| Topic   | `/color_cube_detector/detections/*/center`                    | 视觉节点 → 任务节点               |
+| Topic   | `/color_cube_detector/detections/*/center`                    | 几何中心 PointStamped，供查看定位结果 |
+| Topic   | `/color_cube_detector/detections/*/pose`                      | 视觉节点 → visual_target.py → 视觉抓取任务 |
 | Topic   | `/color_cube_detector/debug_image`                            | 带识别框和坐标的调试图            |
 | Action  | `/scaled_joint_trajectory_controller/follow_joint_trajectory` | MoveIt → UR7e 控制器              |
 | Action  | `/gripper_controller/follow_joint_trajectory`                 | GripperClient/MoveIt → 夹爪控制器 |

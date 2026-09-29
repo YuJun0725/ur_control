@@ -28,6 +28,7 @@ def generate_launch_description():
     paused = LaunchConfiguration('paused')
     launch_rviz = LaunchConfiguration('launch_rviz')
     run_demo = LaunchConfiguration('run_demo')
+    use_vision_target = LaunchConfiguration('use_vision_target')
     use_sim_time = LaunchConfiguration('use_sim_time')
 
     # 第一阶段：物理世界、机器人模型、/clock 桥和控制器。
@@ -68,7 +69,10 @@ def generate_launch_description():
             )
         ),
         condition=IfCondition(run_demo),
-        launch_arguments={'use_sim_time': use_sim_time}.items(),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+            'use_vision_target': use_vision_target,
+        }.items(),
     )
 
     def start_after_controllers(event, _context):
@@ -88,6 +92,7 @@ def generate_launch_description():
             DeclareLaunchArgument('paused', default_value='false'),
             DeclareLaunchArgument('launch_rviz', default_value='true'),
             DeclareLaunchArgument('run_demo', default_value='true'),
+            DeclareLaunchArgument('use_vision_target', default_value='false'),
             DeclareLaunchArgument('use_sim_time', default_value='true'),
             gazebo,
             wait_for_controllers,

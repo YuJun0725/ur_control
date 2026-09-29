@@ -1,4 +1,4 @@
-"""重置 Gazebo 物理方块后，再启动工作单元抓取任务。"""
+"""启动固定目标或 RGB-D 视觉目标驱动的 Gazebo 抓取任务。"""
 
 from pathlib import Path
 
@@ -8,11 +8,15 @@ from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
     ExecuteProcess,
+    IncludeLaunchDescription,
     LogInfo,
     RegisterEventHandler,
+    TimerAction,
 )
+from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -20,10 +24,12 @@ import yaml
 
 
 def generate_launch_description():
-    """确保动态方块复位成功后，才启动依赖它的 MoveIt 抓取任务。"""
+    """固定模式先复位；视觉模式从当前相机观测定位方块。"""
     use_sim_time = LaunchConfiguration('use_sim_time')
+    use_vision_target = LaunchConfiguration('use_vision_target')
     gazebo_share = Path(get_package_share_directory('ur7e_gazebo'))
     motion_share = Path(get_package_share_directory('ur7e_motion'))
+    vision_share = Path(get_package_share_directory('ur7e_vision'))
     task_config = gazebo_share / 'config' / 'workspace_pick_place_gazebo.yaml'
     # workspace_pick_place_demo 使用 MoveItPy；它需要同样的 OMPL/规划参数，
     # 这里读取 ur7e_motion 通用规划 YAML，并与 MoveItConfigsBuilder 的模型参数合并。
@@ -51,10 +57,11 @@ def generate_launch_description():
                 / 'lib' / 'ros_gz_sim' / 'set_entity_pose'),
             '--name', 'workspace_target',
             '--type', '2',
-            '--pos', '0.16', '0.47', '0.331',
+            '--pos', '0.22', '0.47', '0.331',
             '--quat', '0.0', '0.0', '0.0', '1.0',
         ],
         output='screen',
+        condition=UnlessCondition(use_vision_target),
     )
     # 复用 Mock/RViz 版本的 Python 任务节点，只通过 Gazebo 专用 YAML 覆盖抓取高度、
     # 夹爪闭合角度及仿真起点容差，因此上层任务接口保持一致。
@@ -68,6 +75,27 @@ def generate_launch_description():
             motion_config,
             str(task_config),
             {'use_sim_time': use_sim_time},
+        ],
+    )
+
+    # 视觉模式不会执行固定位置重置；识别器只接收相机图像，任务等待新鲜结果。
+    detector = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            str(vision_share / 'launch' / 'color_cube_detector.launch.py')
+        ),
+        condition=IfCondition(use_vision_target),
+        launch_arguments={'use_sim_time': use_sim_time}.items(),
+    )
+    vision_demo_node = Node(
+        package='ur7e_motion',
+        executable='workspace_pick_place_demo',
+        name='workspace_pick_place_gazebo',
+        output='screen',
+        parameters=[
+            moveit_config.to_dict(),
+            motion_config,
+            str(task_config),
+            {'use_sim_time': use_sim_time, 'use_vision_target': True},
         ],
     )
 
@@ -85,7 +113,16 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 'use_sim_time', default_value='true', description='Use Gazebo time'
             ),
+            DeclareLaunchArgument(
+                'use_vision_target', default_value='false',
+                description='Use the RGB-D estimated red cube pose'
+            ),
             reset_target,
+            detector,
+            TimerAction(
+                period=1.0, actions=[vision_demo_node],
+                condition=IfCondition(use_vision_target),
+            ),
             # 只有 set_entity_pose 正常退出，才创建真正的抓取节点。
             RegisterEventHandler(
                 OnProcessExit(

@@ -23,11 +23,13 @@
 
     center_divider_size: [0.06, 0.18, 0.24]
     center_divider_position: [0.02, 0.47, 0.42]
+    # MoveIt 专用安全余量：隔断每一面外扩 2 cm；Gazebo 实物不变。
+    center_divider_padding: 0.02
 
     # The physical cube settles onto the z=0.30 table. The extra millimetre
     # avoids starting the MoveIt attached body in exact table contact.
     target_size: [0.035, 0.035, 0.060]
-    target_position: [0.16, 0.47, 0.331]
+    target_position: [0.22, 0.47, 0.331]
     place_position: [0.16, 0.32, 0.331]
 
     # In Gazebo the TCP is aimed at the cube centre so both fingertips contact

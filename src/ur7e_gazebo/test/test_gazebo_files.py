@@ -142,6 +142,7 @@ def test_world_contains_fixed_workcell_and_dynamic_target():
     ) is not None
 
     target = models['workspace_target']
+    assert target.findtext('pose') == '0.22 0.47 0.331 0 0 0'
     assert target.find('static') is None
     assert target.findtext('link/inertial/mass') == '0.08'
     assert target.findtext(
@@ -193,10 +194,15 @@ def test_gazebo_task_uses_physical_contact_geometry():
     ).open(encoding='utf-8') as config_file:
         parameters = yaml.safe_load(config_file)['/**']['ros__parameters']
 
-    assert parameters['target_position'] == [0.16, 0.47, 0.331]
+    assert parameters['target_position'] == [0.22, 0.47, 0.331]
     assert parameters['place_position'] == [0.16, 0.32, 0.331]
     assert parameters['grasp_tcp_offset'] == [0.0, 0.0, 0.0]
     assert parameters['lift_translation'] == [0.0, 0.0, 0.10]
     assert parameters['grasp_position'] == 0.37
+    assert parameters['center_divider_padding'] == 0.02
     assert parameters['static_scene_before_ready'] is True
     assert parameters['trajectory_execution.allowed_start_tolerance'] == 0.1
+    reset_launch_source = (
+        PACKAGE_ROOT / 'launch' / 'workspace_pick_place_gazebo.launch.py'
+    ).read_text(encoding='utf-8')
+    assert "'--pos', '0.22', '0.47', '0.331'" in reset_launch_source

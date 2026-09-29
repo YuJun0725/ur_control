@@ -1,6 +1,7 @@
 """Pure OpenCV and geometry helpers used by the color detector node."""
 
 from dataclasses import dataclass
+import math
 from typing import Iterable, Sequence
 
 import cv2
@@ -15,6 +16,120 @@ class ColorCandidate:
     bounding_box: tuple[int, int, int, int]
     area: float
     contour: np.ndarray
+
+
+@dataclass(frozen=True)
+class CuboidEstimate:
+    """Known-size cuboid center and top-face yaw in the robot base frame."""
+
+    center: tuple[float, float, float]
+    yaw: float
+    top_point_count: int
+
+
+def quaternion_rotation_matrix(quaternion: Sequence[float]) -> np.ndarray:
+    """Return a 3x3 rotation matrix for a ROS XYZW quaternion."""
+    q = np.asarray(quaternion, dtype=np.float64)
+    if q.shape != (4,) or not np.all(np.isfinite(q)):
+        raise ValueError('quaternion must contain four finite values')
+    norm = np.linalg.norm(q)
+    if norm <= 0.0:
+        raise ValueError('quaternion must be nonzero')
+    x, y, z, w = q / norm
+    return np.array([
+        [1 - 2 * (y*y + z*z), 2 * (x*y - z*w), 2 * (x*z + y*w)],
+        [2 * (x*y + z*w), 1 - 2 * (x*x + z*z), 2 * (y*z - x*w)],
+        [2 * (x*z - y*w), 2 * (y*z + x*w), 1 - 2 * (x*x + y*y)],
+    ])
+
+
+def estimate_cuboid_pose(
+    depth_meters: np.ndarray,
+    contour: np.ndarray,
+    intrinsics: Sequence[float],
+    camera_to_base: np.ndarray,
+    size: Sequence[float],
+    *,
+    min_depth: float = 0.1,
+    max_depth: float = 3.0,
+    top_band: float = 0.006,
+    min_top_points: int = 20,
+) -> CuboidEstimate | None:
+    """Fit the visible top face; use only the known size to infer the center.
+
+    ``camera_to_base`` is calibrated camera TF. No model/world pose or table
+    coordinates enter this calculation. Reject a side-only or badly occluded
+    observation instead of publishing an unsafe grasp target.
+    """
+    dimensions = np.asarray(size, dtype=np.float64)
+    if dimensions.shape != (3,) or np.any(dimensions <= 0):
+        raise ValueError('size must contain three positive values')
+    if not np.all(np.isfinite(dimensions)):
+        raise ValueError('size must contain finite values')
+    transform = np.asarray(camera_to_base, dtype=np.float64)
+    if transform.shape != (4, 4) or not np.all(np.isfinite(transform)):
+        raise ValueError('camera_to_base must be a finite 4x4 matrix')
+    fx, fy, cx, cy = [float(value) for value in intrinsics]
+    if fx <= 0 or fy <= 0:
+        raise ValueError('focal lengths must be positive')
+
+    contour_mask = np.zeros(depth_meters.shape[:2], dtype=np.uint8)
+    cv2.drawContours(contour_mask, [contour], -1, 255, cv2.FILLED)
+    contour_mask = cv2.erode(contour_mask, np.ones((3, 3), np.uint8))
+    rows, columns = np.nonzero(
+        (contour_mask > 0) & np.isfinite(depth_meters)
+        & (depth_meters >= min_depth) & (depth_meters <= max_depth)
+    )
+    if rows.size < min_top_points:
+        return None
+    depths = depth_meters[rows, columns]
+    optical_points = np.column_stack((
+        (columns - cx) * depths / fx,
+        (rows - cy) * depths / fy,
+        depths,
+    ))
+    base_points = (
+        optical_points @ transform[:3, :3].T + transform[:3, 3]
+    )
+
+    # Highest visible surface is the top face for an upright cuboid.
+    top_z = float(np.percentile(base_points[:, 2], 95))
+    top_points = base_points[
+        np.abs(base_points[:, 2] - top_z) <= top_band
+    ]
+    if len(top_points) < min_top_points:
+        return None
+    rectangle = cv2.minAreaRect(top_points[:, :2].astype(np.float32))
+    observed_sides = sorted(rectangle[1])
+    expected_sides = sorted(dimensions[:2])
+    if any(
+        observed < expected * 0.5 or observed > expected * 1.5
+        for observed, expected in zip(observed_sides, expected_sides)
+    ):
+        return None
+
+    # A square has 90-degree yaw symmetry. Pick the equivalent yaw closest to
+    # the base axes; the grasp planner may choose either opposite face pair.
+    corners = cv2.boxPoints(rectangle)
+    edge = corners[1] - corners[0]
+    other_edge = corners[2] - corners[1]
+    if abs(dimensions[0] - dimensions[1]) >= 1e-6:
+        # 将物体 X 轴对应到已知 X 尺寸，避免长方形的朝向差 90 度。
+        if (dimensions[0] > dimensions[1]) != (
+            np.linalg.norm(edge) > np.linalg.norm(other_edge)
+        ):
+            edge = other_edge
+    yaw = math.atan2(float(edge[1]), float(edge[0]))
+    if abs(dimensions[0] - dimensions[1]) < 1e-6:
+        yaw = (yaw + math.pi / 4) % (math.pi / 2) - math.pi / 4
+    else:
+        yaw = (yaw + math.pi / 2) % math.pi - math.pi / 2
+    return CuboidEstimate(
+        (float(rectangle[0][0]), float(rectangle[0][1]),
+         top_z - float(dimensions[2]) / 2),
+        yaw,
+        len(top_points),
+    )
 
 
 def create_hsv_mask(

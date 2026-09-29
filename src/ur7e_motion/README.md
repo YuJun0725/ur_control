@@ -90,20 +90,22 @@ ros2 launch ur7e_motion motion_command.launch.py \
 
 ## 多候选轨迹选择
 
-每个运动目标会调用 OMPL 生成 3 条候选轨迹。程序只保留通过 MoveIt 碰撞验证的
-候选，并按六个关节的累计欧氏角距离计算路径长度，最后只执行其中最短的一条。
-规划日志会显示每条候选轨迹的长度和最终选择结果，例如：
+关节目标仍由 OMPL 独立规划 3 次。位姿和相对平移目标先从当前关节角求一个近邻
+逆运动学（IK）目标：若整机碰撞检查通过，对它规划 1 次，再对普通位姿目标规划
+2 次；若近邻解不存在或碰撞，则对普通位姿目标规划 3 次。总规划次数不增加。
+
+所有成功候选仍按六关节累计角路程选择最短轨迹。日志另外记录 TCP 的空间路程，
+便于判断“末端绕远”与“关节翻转”；本阶段 TCP 路程只用于诊断，不参与排序。
 
 ```text
-Planning candidate 1/3 succeeded: joint-space length=2.1878 rad
-Planning candidate 2/3 succeeded: joint-space length=4.8032 rad
-Planning candidate 3/3 succeeded: joint-space length=12.5319 rad
-Selected shortest of 3 valid candidates: joint-space length=2.1878 rad
+nearby-IK candidate 1/1 succeeded: joint-space length=1.2000 rad, TCP length=0.1800 m
+pose candidate 1/2 succeeded: joint-space length=4.8000 rad, TCP length=0.5200 m
+Selected shortest of 2 valid candidates (nearby-IK): joint-space length=1.2000 rad, TCP length=0.1800 m
 ```
 
-规划失败或未通过碰撞验证的候选不会参与比较，更不会发送给控制器。如果 3 条候选
-全部失败，本次运动会安全中止。候选数量由 `moveit_client.py` 中的
-`PLANNING_CANDIDATES` 控制。
+规划失败或未通过碰撞验证的候选不会参与比较，更不会发送给控制器。如果全部
+候选失败，本次运动安全中止。候选数量由 `moveit_client.py` 中的
+`PLANNING_CANDIDATES` 控制。近邻 IK 只是可选的目标分支，并不保证全局最短路径。
 
 ## Python 控制接口
 
